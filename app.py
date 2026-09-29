@@ -5,14 +5,16 @@ from supabase import create_client, Client
 
 st.set_page_config(page_title="F.R.Y.D.A.Y. - Gestor de Licitações", layout="wide")
 
-# Conexão com o Supabase
+# Conexão com o Supabase com suporte a invalidação de cache
 @st.cache_resource
-def init_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+def init_supabase(url: str, key: str):
     return create_client(url, key)
 
-supabase = init_supabase()
+# .strip() remove espaços ocultos ou quebras de linha acidentais
+url = st.secrets["SUPABASE_URL"].strip()
+key = st.secrets["SUPABASE_KEY"].strip()
+
+supabase = init_supabase(url, key)
 
 st.title("🛡️ F.R.Y.D.A.Y. | Painel de Compras Governamentais")
 st.caption("Empresa: CELMA NOGUEIRA DE SOUZA SOARES - CNPJ: 58.573.360/0001-62")

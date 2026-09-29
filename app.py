@@ -22,13 +22,13 @@ st.caption("Empresa: CELMA NOGUEIRA DE SOUZA SOARES - CNPJ: 58.573.360/0001-62")
 # Carrega Dados com proteção contra erros
 # Carrega Dados de forma segura
 df = pd.DataFrame()
+
 try:
     res = supabase.table("oportunidades").select("*").execute()
     if res and hasattr(res, 'data') and res.data:
         df = pd.DataFrame(res.data)
 except Exception as e:
-    st.error(f"⚠️ Falha de conexão/consulta com o Supabase: {e}")
-df = pd.DataFrame(res.data)
+    st.error(f"⚠️ Falha de conexão/permissão com o Supabase: {e}")
 
 if df.empty:
     st.info("Nenhuma oportunidade cadastrada até o momento. Aguarde a execução do robô de captura.")

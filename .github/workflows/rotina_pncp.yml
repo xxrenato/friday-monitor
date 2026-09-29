@@ -1,0 +1,27 @@
+name: Executar Monitoramento PNCP
+
+on:
+  schedule:
+    - cron: '0 9,15 * * 1-5' # Roda de segunda a sexta, às 06h e 12h (horário de Brasília)
+  workflow_dispatch: # Permite executar manualmente pelo painel do GitHub
+
+jobs:
+  executar-busca:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar Código
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar Dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar Ingestão de Dados
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python ingest.py

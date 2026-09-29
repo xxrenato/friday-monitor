@@ -20,11 +20,12 @@ st.caption("Empresa: CELMA NOGUEIRA DE SOUZA SOARES - CNPJ: 58.573.360/0001-62")
 # Carrega Dados
 #res = supabase.table("oportunidades").select("*").execute()
 # Carrega Dados com proteção contra erros
+# Carrega Dados de forma segura
 try:
     res = supabase.table("oportunidades").select("*").execute()
-    df = pd.DataFrame(res.data)
+    df = pd.DataFrame(res.data if res and hasattr(res, 'data') else [])
 except Exception as e:
-    st.error("⚠️ Não foi possível consultar a tabela no Supabase. Confirme se a tabela 'oportunidades' foi criada no SQL Editor.")
+    st.error(f"⚠️ Falha de conexão/permissão com o Supabase: {e}")
     df = pd.DataFrame()
 df = pd.DataFrame(res.data)
 

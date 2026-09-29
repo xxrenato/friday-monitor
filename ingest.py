@@ -3,9 +3,13 @@ import requests
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
-# Configuração do Supabase via Variáveis de Ambiente
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# Puxa variáveis do ambiente no GitHub Actions e remove espaços ocultos
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("⚠️ SUPABASE_URL ou SUPABASE_KEY não foram encontradas nos GitHub Secrets!")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Palavras-chave associadas aos CNAEs do MEI
@@ -25,7 +29,7 @@ def buscar_e_salvar_pncp():
     
     response = requests.get(url, timeout=20)
     if response.status_code != 200:
-        print("Falha ao conectar na API do PNCP")
+        print(f"Falha ao conectar na API do PNCP: Status {response.status_code}")
         return
 
     dados = response.json().get('data', [])
@@ -51,7 +55,9 @@ def buscar_e_salvar_pncp():
             }
             novas_oportunidades.append(registro)
 
-    # Inserção no Supabase (ignora duplicados pelo ID primário)
+    print(f"Oportunidades encontradas para o perfil do CNPJ: {len(novas_oportunidades)}")
+
+    # Inserção no Supabase (ignora duplicados pelo ID)
     for op in novas_oportunidades:
         try:
             supabase.table("oportunidades").upsert(op, on_conflict="id").execute()

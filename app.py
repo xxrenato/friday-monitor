@@ -21,6 +21,7 @@ st.caption("Empresa: CELMA NOGUEIRA DE SOUZA SOARES - CNPJ: 58.573.360/0001-62")
 #res = supabase.table("oportunidades").select("*").execute()
 # Carrega Dados com proteção contra erros
 # Carrega Dados de forma segura
+df = pd.DataFrame()
 try:
     res = supabase.table("oportunidades").select("*").execute()
     df = pd.DataFrame(res.data if res and hasattr(res, 'data') else [])

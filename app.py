@@ -24,10 +24,10 @@ st.caption("Empresa: CELMA NOGUEIRA DE SOUZA SOARES - CNPJ: 58.573.360/0001-62")
 df = pd.DataFrame()
 try:
     res = supabase.table("oportunidades").select("*").execute()
-    df = pd.DataFrame(res.data if res and hasattr(res, 'data') else [])
+    if res and hasattr(res, 'data') and res.data:
+        df = pd.DataFrame(res.data)
 except Exception as e:
-    st.error(f"⚠️ Falha de conexão/permissão com o Supabase: {e}")
-    df = pd.DataFrame()
+    st.error(f"⚠️ Falha de conexão/consulta com o Supabase: {e}")
 df = pd.DataFrame(res.data)
 
 if df.empty:

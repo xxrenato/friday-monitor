@@ -205,8 +205,9 @@ def buscar_contratacoes() -> list[dict]:
     uf = os.environ.get("PNCP_UF", "").strip().upper()
     max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "500"))
     atraso_pagina = float(os.environ.get("PNCP_PAGE_DELAY", "0.10"))
+    horizonte_dias = int(os.environ.get("PNCP_PROPOSAL_HORIZON_DAYS", "30"))
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    data_final = agora.strftime("%Y%m%d")
+    data_final = (agora + timedelta(days=horizonte_dias)).strftime("%Y%m%d")
     data_inicial = data_final  # mantido na assinatura; o endpoint de propostas usa dataFinal.
     modalidades = modalidades_configuradas()
     por_id: dict[str, dict] = {}

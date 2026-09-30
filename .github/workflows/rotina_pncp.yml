@@ -47,6 +47,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           PNCP_UF: "" # vazio = Brasil inteiro
           PNCP_MODALIDADES: "4,6,7,8,12"
+          PNCP_PROPOSAL_HORIZON_DAYS: "30"
           PNCP_MAX_PAGES_PER_MODALITY: "500"
           PNCP_PAGE_DELAY: "0.10"
         run: python ingest.py

@@ -1,5 +1,6 @@
 import os
 import time
+import random
 from datetime import datetime, timedelta
 from curl_cffi import requests
 from supabase import create_client, Client
@@ -19,6 +20,35 @@ KEYWORDS = [
     "optica", "telefonia", "eletrodomestico", "audio", "video", "material medico"
 ]
 
+def consultar_pncp_com_fallback(url):
+    """Consulta o PNCP forçando HTTP/1.1 e alternando perfis para evitar TCP Reset."""
+    impersonates = ["chrome110", "safari15_5", "edge101"]
+    
+    for perfil in impersonates:
+        try:
+            # http_version="1.1" impede a derrubada de conexão em HTTP/2 pelo WAF governamental
+            response = requests.get(
+                url, 
+                impersonate=perfil, 
+                http_version="1.1", 
+                timeout=30,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache"
+                }
+            )
+            if response.status_code == 200:
+                return response.json().get('data', [])
+            elif response.status_code == 404:
+                return []
+        except Exception as e:
+            print(f"Aviso com perfil {perfil}: {e}. Tentando alternativa...")
+            time.sleep(random.uniform(2, 4))
+            
+    return None
+
 def buscar_e_salvar_pncp():
     data_hoje = datetime.now().strftime("%Y%m%d")
     data_inicial = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
@@ -28,24 +58,19 @@ def buscar_e_salvar_pncp():
     for pagina in range(1, 6):
         url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicas?dataInicial={data_inicial}&dataFinal={data_hoje}&codigoModalidadeContratacao=8&uf=RJ&pagina={pagina}"
         
-        try:
-            print(f"Consultando página {pagina} do PNCP...")
-            # impersonate="chrome120" emula a handshake TLS de um navegador real
-            response = requests.get(url, impersonate="chrome120", timeout=30)
-            
-            if response.status_code == 200:
-                dados = response.json().get('data', [])
-                if not dados:
-                    print(f"Sem mais dados na página {pagina}.")
-                    break
-                todas_contratacoes.extend(dados)
-                print(f"✅ Página {pagina} capturada com sucesso! ({len(dados)} compras encontradas)")
-            else:
-                print(f"Aviso: PNCP retornou status {response.status_code}")
-            
-            time.sleep(2)
-        except Exception as e:
-            print(f"Erro ao consultar página {pagina}: {e}")
+        print(f"Consultando página {pagina} do PNCP...")
+        dados = consultar_pncp_com_fallback(url)
+        
+        if dados is not None:
+            if not dados:
+                print(f"Sem mais dados na página {pagina}.")
+                break
+            todas_contratacoes.extend(dados)
+            print(f"✅ Página {pagina} capturada com sucesso! ({len(dados)} compras encontradas)")
+        else:
+            print(f"❌ Não foi possível obter resposta do servidor para a página {pagina}.")
+        
+        time.sleep(3)
 
     print(f"Total de contratações analisadas no período: {len(todas_contratacoes)}")
 

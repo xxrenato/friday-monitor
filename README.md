@@ -11,10 +11,10 @@ detalha os itens e apoia a cotação de fornecedores e o cálculo de margem.
 - dispensa de licitação (8);
 - credenciamento (12).
 
-Por padrão, a busca cobre o Brasil inteiro e os últimos 15 dias. O painel só exibe processos
-com encerramento futuro e situação válida: recebendo propostas/lances ou com abertura próxima.
-Esses valores podem ser alterados pelas variáveis `PNCP_UF`, `PNCP_MODALIDADES` e
-`PNCP_LOOKBACK_DAYS` no workflow.
+Por padrão, a busca cobre o Brasil inteiro usando o endpoint oficial de contratações com
+recebimento de propostas em aberto. O painel só exibe processos com encerramento futuro e
+situação válida: recebendo propostas/lances ou com abertura próxima. O escopo pode ser alterado
+pelas variáveis `PNCP_UF` e `PNCP_MODALIDADES` no workflow.
 
 ## Classificação para MEI
 

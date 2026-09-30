@@ -13,7 +13,7 @@ from supabase import Client, create_client
 from urllib3.util.retry import Retry
 
 
-PNCP_CONTRATACOES_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+PNCP_CONTRATACOES_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/proposta"
 PNCP_ITENS_URL = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens"
 PAGE_SIZE = 50
 REQUEST_TIMEOUT = 60
@@ -139,7 +139,6 @@ def consultar_pagina(
     pagina: int,
 ) -> tuple[list[dict], int, int]:
     parametros = {
-        "dataInicial": data_inicial,
         "dataFinal": data_final,
         "codigoModalidadeContratacao": modalidade,
         "pagina": pagina,
@@ -203,13 +202,12 @@ def buscar_modalidade(
 
 
 def buscar_contratacoes() -> list[dict]:
-    dias = int(os.environ.get("PNCP_LOOKBACK_DAYS", "15"))
     uf = os.environ.get("PNCP_UF", "").strip().upper()
-    max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "1500"))
-    atraso_pagina = float(os.environ.get("PNCP_PAGE_DELAY", "0.05"))
+    max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "500"))
+    atraso_pagina = float(os.environ.get("PNCP_PAGE_DELAY", "0.10"))
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_final = agora.strftime("%Y%m%d")
-    data_inicial = (agora - timedelta(days=dias)).strftime("%Y%m%d")
+    data_inicial = data_final  # mantido na assinatura; o endpoint de propostas usa dataFinal.
     modalidades = modalidades_configuradas()
     por_id: dict[str, dict] = {}
     # O PNCP aplica limite de requisições; modalidades seguem em fila para evitar HTTP 429.

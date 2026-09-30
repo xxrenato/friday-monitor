@@ -1,36 +1,38 @@
-# F.R.Y.D.A.Y. - monitor de oportunidades p�blicas para MEI
+# F.R.Y.D.A.Y. — monitor de oportunidades públicas para MEI
 
-Aplica��o Streamlit que consulta o PNCP, classifica oportunidades para triagem de um MEI,
-detalha os itens e apoia a cota��o de fornecedores e o c�lculo de margem.
+Aplicação Streamlit que consulta o PNCP, classifica oportunidades para triagem de um MEI,
+detalha os itens e apoia a cotação de fornecedores e o cálculo de margem.
 
-## O que o rob� monitora
+## O que o robô monitora
 
-- concorr�ncia eletr�nica (c�digo 4);
-- preg�o eletr�nico (6);
-- preg�o presencial (7);
-- dispensa de licita��o (8);
+- concorrência eletrônica (código 4);
+- pregão eletrônico (6);
+- pregão presencial (7);
+- dispensa de licitação (8);
 - credenciamento (12).
 
-Por padr�o, a busca cobre o Rio de Janeiro e os �ltimos 15 dias. Esses valores podem ser
-alterados pelas vari�veis `PNCP_UF`, `PNCP_MODALIDADES` e `PNCP_LOOKBACK_DAYS` no workflow.
+Por padrão, a busca cobre o Brasil inteiro e os últimos 15 dias. O painel só exibe processos
+com encerramento futuro e situação válida: recebendo propostas/lances ou com abertura próxima.
+Esses valores podem ser alterados pelas variáveis `PNCP_UF`, `PNCP_MODALIDADES` e
+`PNCP_LOOKBACK_DAYS` no workflow.
 
-## Classifica��o para MEI
+## Classificação para MEI
 
-A pontua��o usa categoria habilitada no perfil, benef�cio informado pelo PNCP para ME/EPP,
-valor estimado, modalidade e forma de disputa. � somente uma triagem: a aptid�o final depende
+A pontuação usa categoria habilitada no perfil, benefício informado pelo PNCP para ME/EPP,
+valor estimado, modalidade e forma de disputa. É somente uma triagem: a aptidão final depende
 do objeto e das regras do edital, das atividades/CNAEs do CCMEI, da regularidade fiscal, do
-SICAF e das condi��es log�sticas.
+SICAF e das condições logísticas.
 
-## Cota��es
+## Cotações
 
-- Para inform�tica, o painel consulta automaticamente as ofertas publicadas no BoaDica.
+- Para informática, o painel consulta automaticamente as ofertas publicadas no BoaDica.
 - Para outras lojas, o painel fornece buscas diretas em grandes varejistas e permite registrar
-  pre�o, frete, entrega ou retirada, prazo e localidade.
-- Uma pesquisa ampla autom�tica opcional pode ser habilitada adicionando `SERPER_API_KEY`
-  aos Secrets do Streamlit. Os resultados continuam restritos a dom�nios de lojas conhecidas.
-- Todo pre�o deve ser reconfirmado no carrinho e com emiss�o de nota fiscal antes da proposta.
+  preço, frete, entrega ou retirada, prazo e localidade.
+- Uma pesquisa ampla automática opcional pode ser habilitada adicionando `SERPER_API_KEY`
+  aos Secrets do Streamlit. Os resultados continuam restritos a domínios de lojas conhecidas.
+- Todo preço deve ser reconfirmado no carrinho e com emissão de nota fiscal antes da proposta.
 
-## Secrets necess�rios
+## Secrets necessários
 
 No GitHub Actions e no Streamlit Community Cloud:
 
@@ -39,11 +41,10 @@ SUPABASE_URL = "https://seu-projeto.supabase.co"
 SUPABASE_KEY = "chave-de-servidor"
 ```
 
-Nunca coloque a chave de servidor no c�digo, em aplicativo Android/Windows distribu�do ou em
-reposit�rio p�blico. O painel atual usa essa chave apenas no servidor do Streamlit.
+Nunca coloque a chave de servidor no código, em aplicativo Android/Windows distribuído ou em
+repositório público. O painel atual usa essa chave apenas no servidor do Streamlit.
 
-## Execu��o
+## Execução
 
-O GitHub Actions executa a ingest�o �s 06h e 12h, de segunda a sexta, e tamb�m quando os
-arquivos principais mudam. O Streamlit l� os dados persistidos no Supabase.
-
+O GitHub Actions executa a ingestão às 06h e 12h, de segunda a sexta, e também quando os
+arquivos principais mudam. O Streamlit lê os dados persistidos no Supabase.

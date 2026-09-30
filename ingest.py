@@ -22,33 +22,33 @@ ITEM_WORKERS = 8
 _thread_local = threading.local()
 
 KEYWORD_GROUPS = {
-    "Inform�tica": (
+    "Informática": (
         "informatica", "computador", "notebook", "desktop", "monitor", "periferico",
         "equipamento de ti", "tecnologia da informacao", "ssd", "memoria ram", "nobreak",
         "roteador", "switch", "webcam", "teclado", "mouse",
     ),
-    "Impress�o e suprimentos": ("toner", "impressora", "cartucho", "multifuncional"),
-    "Material de Escrit�rio": (
+    "Impressão e suprimentos": ("toner", "impressora", "cartucho", "multifuncional"),
+    "Material de Escritório": (
         "material de escritorio", "papelaria", "papel a4", "caneta", "envelope",
         "grampeador", "arquivo", "expediente",
     ),
-    "El�trica e ferramentas": (
+    "Elétrica e ferramentas": (
         "material eletrico", "lampada", "cabo eletrico", "ferramenta", "furadeira",
         "parafuso", "eletrico",
     ),
-    "M�veis": ("moveis", "cadeira", "armario", "mesa de escritorio", "estante"),
+    "Móveis": ("moveis", "cadeira", "armario", "mesa de escritorio", "estante"),
     "Material de Limpeza": (
         "material de limpeza", "limpeza", "saneante", "detergente", "desinfetante",
         "papel higienico",
     ),
-    "�ptica, telefonia e audiovisual": (
+    "Óptica, telefonia e audiovisual": (
         "optica", "telefonia", "telefone", "audio", "video", "projetor", "televisor",
     ),
-    "Eletrodom�sticos": (
+    "Eletrodomésticos": (
         "eletrodomestico", "geladeira", "refrigerador", "micro-ondas", "bebedouro",
         "ventilador", "ar condicionado",
     ),
-    "Material de Constru��o": (
+    "Material de Construção": (
         "material de construcao", "cimento", "tinta", "argamassa", "hidraulico",
         "tubo pvc", "torneira",
     ),
@@ -138,16 +138,18 @@ def consultar_pagina(
     uf: str,
     pagina: int,
 ) -> tuple[list[dict], int, int]:
+    parametros = {
+        "dataInicial": data_inicial,
+        "dataFinal": data_final,
+        "codigoModalidadeContratacao": modalidade,
+        "pagina": pagina,
+        "tamanhoPagina": PAGE_SIZE,
+    }
+    if uf:
+        parametros["uf"] = uf
     resposta = sessao.get(
         PNCP_CONTRATACOES_URL,
-        params={
-            "dataInicial": data_inicial,
-            "dataFinal": data_final,
-            "codigoModalidadeContratacao": modalidade,
-            "uf": uf,
-            "pagina": pagina,
-            "tamanhoPagina": PAGE_SIZE,
-        },
+        params=parametros,
         timeout=REQUEST_TIMEOUT,
     )
     resposta.raise_for_status()
@@ -161,8 +163,9 @@ def consultar_pagina(
 
 def buscar_contratacoes() -> list[dict]:
     dias = int(os.environ.get("PNCP_LOOKBACK_DAYS", "15"))
-    uf = os.environ.get("PNCP_UF", "RJ").strip().upper()
-    max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "100"))
+    uf = os.environ.get("PNCP_UF", "").strip().upper()
+    max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "1500"))
+    atraso_pagina = float(os.environ.get("PNCP_PAGE_DELAY", "0.05"))
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_final = agora.strftime("%Y%m%d")
     data_inicial = (agora - timedelta(days=dias)).strftime("%Y%m%d")
@@ -184,20 +187,20 @@ def buscar_contratacoes() -> list[dict]:
                     por_id[str(identificador)] = item
             carregados += len(dados)
             print(
-                f"PNCP modalidade {modalidade}: p�gina {pagina}/{total_paginas}, "
+                f"PNCP modalidade {modalidade}: página {pagina}/{total_paginas}, "
                 f"{len(dados)} registros recebidos."
             )
             if not dados:
                 break
             pagina += 1
-            time.sleep(0.15)
+            time.sleep(atraso_pagina)
         if total_paginas > max_paginas:
-            raise RuntimeError(
-                f"Modalidade {modalidade} retornou {total_paginas} p�ginas; "
-                f"aumente PNCP_MAX_PAGES_PER_MODALITY={max_paginas}."
+            print(
+                f"AVISO: modalidade {modalidade} retornou {total_paginas} páginas; "
+                f"foram processadas as {max_paginas} primeiras."
             )
         print(f"PNCP modalidade {modalidade}: {carregados}/{total_registros} carregados.")
-    print(f"PNCP: {len(por_id)} contrata��es �nicas carregadas.")
+    print(f"PNCP: {len(por_id)} contratações únicas carregadas.")
     return list(por_id.values())
 
 
@@ -209,6 +212,37 @@ def construir_link(item: dict) -> str:
     if cnpj and ano and sequencial:
         return f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}"
     return "https://pncp.gov.br/app/editais"
+
+
+def interpretar_data(valor) -> datetime | None:
+    if not valor:
+        return None
+    try:
+        texto = str(valor).strip().replace("Z", "+00:00")
+        data = datetime.fromisoformat(texto)
+        if data.tzinfo is None:
+            data = data.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
+        return data.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def analisar_janela_disputa(item: dict) -> tuple[bool, str]:
+    agora = datetime.now(timezone.utc)
+    abertura = interpretar_data(item.get("dataAberturaProposta"))
+    encerramento = interpretar_data(item.get("dataEncerramentoProposta"))
+    situacao = normalizar(item.get("situacaoCompraNome") or "")
+    indisponiveis = (
+        "anulad", "revogad", "suspens", "cancelad", "encerrad",
+        "homologad", "fracassad", "desert",
+    )
+    if any(termo in situacao for termo in indisponiveis):
+        return False, item.get("situacaoCompraNome") or "Indisponível"
+    if not encerramento or encerramento <= agora:
+        return False, "Prazo encerrado ou não informado"
+    if abertura and abertura > agora:
+        return True, f"Abre em {abertura.astimezone(ZoneInfo('America/Sao_Paulo')):%d/%m/%Y %H:%M}"
+    return True, f"Aberta até {encerramento.astimezone(ZoneInfo('America/Sao_Paulo')):%d/%m/%Y %H:%M}"
 
 
 def codigo_modalidade(item: dict) -> int | None:
@@ -223,23 +257,28 @@ def transformar(item: dict) -> dict | None:
     categoria = categorizar(item)
     identificador = item.get("numeroControlePNCP")
     objeto = item.get("objetoCompra")
-    if not categoria or not identificador or not objeto:
+    aberta, janela = analisar_janela_disputa(item)
+    if not categoria or not identificador or not objeto or not aberta:
         return None
     orgao = item.get("orgaoEntidade") or {}
     unidade = item.get("unidadeOrgao") or {}
     return {
         "id": str(identificador),
-        "orgao": orgao.get("razaoSocial") or "�rg�o n�o informado",
+        "orgao": orgao.get("razaoSocial") or "Órgão não informado",
         "objeto": objeto,
         "categoria": categoria,
         "valor_estimado": item.get("valorTotalEstimado") or 0,
-        "modalidade": item.get("modalidadeNome") or "N�o informada",
+        "modalidade": item.get("modalidadeNome") or "Não informada",
         "modalidade_codigo": codigo_modalidade(item),
         "modo_disputa": item.get("modoDisputaNome"),
         "instrumento_convocatorio": item.get("tipoInstrumentoConvocatorioNome"),
+        "data_abertura_proposta": item.get("dataAberturaProposta"),
         "data_encerramento_proposta": item.get("dataEncerramentoProposta"),
+        "situacao_compra": item.get("situacaoCompraNome"),
+        "janela_disputa": janela,
+        "oportunidade_aberta": True,
         "municipio": unidade.get("municipioNome"),
-        "uf": unidade.get("ufSigla") or os.environ.get("PNCP_UF", "RJ"),
+        "uf": unidade.get("ufSigla") or os.environ.get("PNCP_UF", ""),
         "link": construir_link(item),
         "link_sistema_origem": item.get("linkSistemaOrigem") or item.get("linkProcessoEletronico"),
         "data_publicacao": item.get("dataPublicacaoPncp"),
@@ -306,7 +345,7 @@ def classificar_mei(oportunidade: dict, itens: list[dict], configuracao: dict) -
     exclusiva = "exclusiv" in beneficio_norm or "reservad" in beneficio_norm
     if exclusiva:
         score += 30
-        motivos.append("item com benef�cio para ME/EPP")
+        motivos.append("item com benefício para ME/EPP")
 
     try:
         valor = float(oportunidade.get("valor_estimado") or 0)
@@ -315,12 +354,12 @@ def classificar_mei(oportunidade: dict, itens: list[dict], configuracao: dict) -
         valor, limite = 0, 80000
     if 0 < valor <= limite:
         score += 20
-        motivos.append(f"valor at� R$ {limite:,.0f}")
+        motivos.append(f"valor até R$ {limite:,.0f}")
 
     modalidade = oportunidade.get("modalidade_codigo")
     if modalidade in {6, 8}:
         score += 15
-        motivos.append("preg�o/dispensa")
+        motivos.append("pregão/dispensa")
     elif modalidade in {4, 7, 12}:
         score += 8
         motivos.append("modalidade monitorada")
@@ -328,18 +367,18 @@ def classificar_mei(oportunidade: dict, itens: list[dict], configuracao: dict) -
     disputa = normalizar(oportunidade.get("modo_disputa") or "")
     if "eletronic" in normalizar(oportunidade.get("modalidade") or "") or "aberto" in disputa:
         score += 10
-        motivos.append("participa��o eletr�nica/aberta")
+        motivos.append("participação eletrônica/aberta")
 
     score = min(score, 100)
     if score >= 70:
-        classificacao = "Alta ader�ncia"
+        classificacao = "Alta aderência"
     elif score >= 45:
         classificacao = "Avaliar edital"
     else:
-        classificacao = "Baixa ader�ncia"
+        classificacao = "Baixa aderência"
     oportunidade["score_mei"] = score
     oportunidade["classificacao_mei"] = classificacao
-    oportunidade["motivo_classificacao"] = "; ".join(motivos) or "faltam evid�ncias para classifica��o"
+    oportunidade["motivo_classificacao"] = "; ".join(motivos) or "faltam evidências para classificação"
     oportunidade["exclusiva_me_epp"] = exclusiva
 
 
@@ -357,7 +396,7 @@ def carregar_status_existentes(supabase: Client) -> dict[str, str]:
         if len(pagina) < 1000:
             break
         inicio += 1000
-    return {str(item["id"]): item.get("status") or "Em An�lise" for item in todos}
+    return {str(item["id"]): item.get("status") or "Em Análise" for item in todos}
 
 
 def enriquecer_oportunidades(
@@ -406,10 +445,14 @@ def salvar_dados(
     oportunidades: list[dict],
     itens: list[dict],
 ) -> tuple[int, int]:
+    agora = datetime.now(timezone.utc).isoformat()
+    supabase.table("oportunidades").update(
+        {"oportunidade_aberta": False, "janela_disputa": "Prazo encerrado"}
+    ).lt("data_encerramento_proposta", agora).execute()
     status_existentes = carregar_status_existentes(supabase)
     registros = []
     for oportunidade in oportunidades:
-        oportunidade["status"] = status_existentes.get(oportunidade["id"], "Em An�lise")
+        oportunidade["status"] = status_existentes.get(oportunidade["id"], "Em Análise")
         registros.append(limpar_campos_internos(oportunidade))
 
     for inicio in range(0, len(registros), BATCH_SIZE):
@@ -438,15 +481,14 @@ def main() -> None:
     oportunidades = [oportunidade for item in contratacoes if (oportunidade := transformar(item))]
     por_id = {oportunidade["id"]: oportunidade for oportunidade in oportunidades}
     oportunidades = list(por_id.values())
-    print(f"Filtro: {len(oportunidades)} oportunidades compat�veis encontradas.")
+    print(f"Filtro: {len(oportunidades)} oportunidades compatíveis encontradas.")
     oportunidades, itens = enriquecer_oportunidades(oportunidades, configuracao)
     total_oportunidades, total_itens = salvar_dados(supabase, oportunidades, itens)
     print(
-        f"Conclu�do: {total_oportunidades} oportunidades e {total_itens} itens "
+        f"Concluído: {total_oportunidades} oportunidades e {total_itens} itens "
         "sincronizados com o Supabase."
     )
 
 
 if __name__ == "__main__":
     main()
-

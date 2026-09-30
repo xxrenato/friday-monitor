@@ -16,12 +16,12 @@ from cotacao import (
 
 st.set_page_config(
     page_title="F.R.Y.D.A.Y. - Oportunidades para MEI",
-    page_icon="???",
+    page_icon="🛡️",
     layout="wide",
 )
 
 STATUS_OPTIONS = [
-    "Em An�lise",
+    "Em Análise",
     "Cotando Fornecedor",
     "Proposta Cadastrada",
     "Vencida",
@@ -29,15 +29,15 @@ STATUS_OPTIONS = [
 ]
 
 CATEGORIAS_DISPONIVEIS = [
-    "Inform�tica",
-    "Impress�o e suprimentos",
-    "Material de Escrit�rio",
-    "El�trica e ferramentas",
-    "M�veis",
+    "Informática",
+    "Impressão e suprimentos",
+    "Material de Escritório",
+    "Elétrica e ferramentas",
+    "Móveis",
     "Material de Limpeza",
-    "�ptica, telefonia e audiovisual",
-    "Eletrodom�sticos",
-    "Material de Constru��o",
+    "Óptica, telefonia e audiovisual",
+    "Eletrodomésticos",
+    "Material de Construção",
     "EPI e uniformes",
 ]
 
@@ -128,26 +128,26 @@ try:
     configuracao = carregar_configuracao(supabase)
     registros = carregar_oportunidades(url, key)
 except Exception as exc:
-    st.error(f"N�o foi poss�vel carregar os dados: {exc}")
+    st.error(f"Não foi possível carregar os dados: {exc}")
     st.stop()
 
 empresa = configuracao.get("razao_social") or "Seu MEI"
-cnpj = configuracao.get("cnpj") or "CNPJ ainda n�o confirmado"
+cnpj = configuracao.get("cnpj") or "CNPJ ainda não confirmado"
 
-st.title("??? F.R.Y.D.A.Y. | Oportunidades e Cota��o")
-st.caption(f"Perfil: {empresa} � {cnpj}")
+st.title("🛡️ F.R.Y.D.A.Y. | Oportunidades e Cotação")
+st.caption(f"Perfil: {empresa} · {cnpj}")
 st.info(
-    "A ader�ncia ao MEI � uma triagem autom�tica. Antes de disputar, confirme no edital "
-    "o CNAE exigido, a regularidade fiscal, o SICAF e as condi��es de entrega."
+    "A aderência ao MEI é uma triagem automática. Antes de disputar, confirme no edital "
+    "o CNAE exigido, a regularidade fiscal, o SICAF e as condições de entrega."
 )
 
 df = pd.DataFrame(registros)
 if not df.empty:
     for coluna, padrao in {
-        "status": "Em An�lise",
-        "classificacao_mei": "Ainda n�o classificada",
-        "modalidade": "N�o informada",
-        "categoria": "N�o informada",
+        "status": "Em Análise",
+        "classificacao_mei": "Ainda não classificada",
+        "modalidade": "Não informada",
+        "categoria": "Não informada",
     }.items():
         if coluna not in df:
             df[coluna] = padrao
@@ -158,17 +158,31 @@ if not df.empty:
     df["data_encerramento_proposta"] = pd.to_datetime(
         df.get("data_encerramento_proposta"), errors="coerce", utc=True
     )
+    df["data_abertura_proposta"] = pd.to_datetime(
+        df.get("data_abertura_proposta"), errors="coerce", utc=True
+    )
+    if "oportunidade_aberta" not in df:
+        df["oportunidade_aberta"] = False
+    df["oportunidade_aberta"] = df["oportunidade_aberta"].fillna(False).astype(bool)
+    agora_utc = pd.Timestamp.now(tz="UTC")
+    df_abertas = df[
+        df["oportunidade_aberta"]
+        & df["data_encerramento_proposta"].notna()
+        & (df["data_encerramento_proposta"] >= agora_utc)
+    ].copy()
+else:
+    df_abertas = df.copy()
 
 aba_oportunidades, aba_cotacoes, aba_perfil = st.tabs(
-    ["?? Oportunidades", "?? Itens, cota��es e margem", "?? Perfil do MEI"]
+    ["🎯 Oportunidades", "🛒 Itens, cotações e margem", "🏢 Perfil do MEI"]
 )
 
 with aba_oportunidades:
     if df.empty:
-        st.info("Nenhuma oportunidade encontrada. Aguarde a pr�xima execu��o do rob�.")
+        st.info("Nenhuma oportunidade encontrada. Aguarde a próxima execução do robô.")
     else:
         f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
-        busca = f1.text_input("Buscar no �rg�o ou objeto", key="busca_oportunidades")
+        busca = f1.text_input("Buscar no órgão ou objeto", key="busca_oportunidades")
         categorias = f2.multiselect(
             "Categoria", sorted(df["categoria"].dropna().unique()), key="filtro_categoria"
         )
@@ -176,18 +190,18 @@ with aba_oportunidades:
             "Modalidade", sorted(df["modalidade"].dropna().unique()), key="filtro_modalidade"
         )
         classificacoes = f4.multiselect(
-            "Ader�ncia ao MEI",
-            ["Alta ader�ncia", "Avaliar edital", "Baixa ader�ncia", "Ainda n�o classificada"],
-            default=["Alta ader�ncia", "Avaliar edital"],
+            "Aderência ao MEI",
+            ["Alta aderência", "Avaliar edital", "Baixa aderência", "Ainda não classificada"],
+            default=["Alta aderência", "Avaliar edital"],
             key="filtro_aderencia",
         )
         status_selecionados = st.multiselect(
             "Status interno",
             STATUS_OPTIONS,
-            default=["Em An�lise", "Cotando Fornecedor", "Proposta Cadastrada"],
+            default=["Em Análise", "Cotando Fornecedor", "Proposta Cadastrada"],
         )
 
-        filtrado = df.copy()
+        filtrado = df_abertas.copy()
         if busca:
             mascara = (
                 filtrado["orgao"].str.contains(busca, case=False, regex=False, na=False)
@@ -210,42 +224,62 @@ with aba_oportunidades:
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Oportunidades filtradas", len(filtrado))
-        m2.metric("Alta ader�ncia", int((filtrado["classificacao_mei"] == "Alta ader�ncia").sum()))
+        m2.metric("Alta aderência", int((filtrado["classificacao_mei"] == "Alta aderência").sum()))
         m3.metric("Dispensas", int(filtrado["modalidade"].str.contains("Dispensa", case=False, na=False).sum()))
-        m4.metric("Preg�es", int(filtrado["modalidade"].str.contains("Preg�o", case=False, na=False).sum()))
+        m4.metric("Pregões", int(filtrado["modalidade"].str.contains("Pregão", case=False, na=False).sum()))
 
         if filtrado.empty:
-            st.warning("Nenhum registro corresponde aos filtros selecionados.")
+            if df_abertas.empty:
+                st.warning(
+                    "O robô está atualizando as oportunidades abertas. Processos encerrados ou "
+                    "sem prazo válido não são exibidos."
+                )
+            else:
+                st.warning("Nenhum registro corresponde aos filtros selecionados.")
         else:
             colunas = [
-                "id", "classificacao_mei", "score_mei", "orgao", "objeto", "categoria",
-                "valor_estimado", "modalidade", "modo_disputa", "municipio",
-                "data_encerramento_proposta", "link", "link_sistema_origem", "status",
+                "classificacao_mei", "score_mei", "modalidade", "janela_disputa",
+                "data_encerramento_proposta", "orgao", "objeto", "categoria",
+                "valor_estimado_br", "municipio", "uf", "link", "link_sistema_origem",
+                "status", "id",
             ]
+            filtrado = filtrado.copy()
+            filtrado["valor_estimado_br"] = filtrado["valor_estimado"].map(brl)
             colunas = [coluna for coluna in colunas if coluna in filtrado.columns]
             original = filtrado.set_index("id")["status"].to_dict()
             editado = st.data_editor(
                 filtrado[colunas],
                 column_config={
-                    "id": "Identifica��o PNCP",
-                    "classificacao_mei": "Ader�ncia ao MEI",
-                    "score_mei": st.column_config.ProgressColumn("Pontua��o", min_value=0, max_value=100),
-                    "valor_estimado": st.column_config.NumberColumn("Valor estimado", format="R$ %.2f"),
-                    "data_encerramento_proposta": st.column_config.DatetimeColumn(
-                        "Fim das propostas", format="DD/MM/YYYY HH:mm"
+                    "id": st.column_config.TextColumn("Identificação PNCP", width="medium"),
+                    "classificacao_mei": st.column_config.TextColumn("Aderência ao MEI", width="small"),
+                    "score_mei": st.column_config.ProgressColumn(
+                        "Pontuação", min_value=0, max_value=100, width="small"
                     ),
-                    "link": st.column_config.LinkColumn("Edital no PNCP", display_text="Abrir edital"),
+                    "modalidade": st.column_config.TextColumn("Modalidade", width="small"),
+                    "janela_disputa": st.column_config.TextColumn("Disponibilidade", width="medium"),
+                    "orgao": st.column_config.TextColumn("Órgão", width="large"),
+                    "objeto": st.column_config.TextColumn("Objeto", width="large"),
+                    "categoria": st.column_config.TextColumn("Categoria", width="medium"),
+                    "valor_estimado_br": st.column_config.TextColumn("Valor estimado", width="medium"),
+                    "municipio": st.column_config.TextColumn("Município", width="medium"),
+                    "data_encerramento_proposta": st.column_config.DatetimeColumn(
+                        "Fim das propostas", format="DD/MM/YYYY HH:mm", width="medium"
+                    ),
+                    "link": st.column_config.LinkColumn(
+                        "Edital no PNCP", display_text="Abrir edital", width="small"
+                    ),
                     "link_sistema_origem": st.column_config.LinkColumn(
-                        "Sistema da disputa", display_text="Ir para disputa"
+                        "Sistema da disputa", display_text="Ir para disputa", width="small"
                     ),
                     "status": st.column_config.SelectboxColumn(
-                        "Status interno", options=STATUS_OPTIONS, required=True
+                        "Status interno", options=STATUS_OPTIONS, required=True, width="medium"
                     ),
                 },
                 disabled=[coluna for coluna in colunas if coluna != "status"],
                 hide_index=True,
                 use_container_width=True,
-                height=620,
+                height=520,
+                row_height=58,
             )
             if st.button("Salvar status", type="primary"):
                 alteracoes = [
@@ -254,7 +288,7 @@ with aba_oportunidades:
                     if original.get(str(linha["id"])) != linha["status"]
                 ]
                 if not alteracoes:
-                    st.info("Nenhuma altera��o de status para salvar.")
+                    st.info("Nenhuma alteração de status para salvar.")
                 else:
                     try:
                         for identificador, status in alteracoes:
@@ -265,21 +299,21 @@ with aba_oportunidades:
                         st.success(f"{len(alteracoes)} status atualizado(s).")
                         st.rerun()
                     except Exception as exc:
-                        st.error(f"N�o foi poss�vel salvar os status: {exc}")
+                        st.error(f"Não foi possível salvar os status: {exc}")
 
 with aba_cotacoes:
-    if df.empty:
-        st.info("As cota��es ficar�o dispon�veis quando houver oportunidades.")
+    if df_abertas.empty:
+        st.info("As cotações ficarão disponíveis quando a atualização das oportunidades abertas terminar.")
     else:
-        opcoes = df["id"].astype(str).tolist()
-        mapa = df.set_index(df["id"].astype(str)).to_dict("index")
+        opcoes = df_abertas["id"].astype(str).tolist()
+        mapa = df_abertas.set_index(df_abertas["id"].astype(str)).to_dict("index")
 
         def rotulo_oportunidade(identificador: str) -> str:
             oportunidade = mapa.get(identificador, {})
             objeto = str(oportunidade.get("objeto") or "")
             return (
-                f"{oportunidade.get('classificacao_mei', '')} � "
-                f"{oportunidade.get('modalidade', '')} � {objeto[:105]}"
+                f"{oportunidade.get('classificacao_mei', '')} · "
+                f"{oportunidade.get('modalidade', '')} · {objeto[:105]}"
             )
 
         oportunidade_id = st.selectbox(
@@ -290,9 +324,9 @@ with aba_cotacoes:
         )
         oportunidade = mapa[oportunidade_id]
         topo1, topo2, topo3 = st.columns([2, 1, 1])
-        topo1.markdown(f"**�rg�o:** {oportunidade.get('orgao', '')}")
+        topo1.markdown(f"**Órgão:** {oportunidade.get('orgao', '')}")
         topo2.metric("Valor estimado", brl(oportunidade.get("valor_estimado")))
-        topo3.metric("Ader�ncia", oportunidade.get("classificacao_mei", "-"))
+        topo3.metric("Aderência", oportunidade.get("classificacao_mei", "—"))
         l1, l2 = st.columns(2)
         if oportunidade.get("link"):
             l1.link_button("Abrir edital no PNCP", oportunidade["link"], use_container_width=True)
@@ -300,18 +334,18 @@ with aba_cotacoes:
             l2.link_button(
                 "Abrir sistema da disputa", oportunidade["link_sistema_origem"], use_container_width=True
             )
-        st.caption(f"Crit�rios da classifica��o: {oportunidade.get('motivo_classificacao') or 'aguardando an�lise'}")
+        st.caption(f"Critérios da classificação: {oportunidade.get('motivo_classificacao') or 'aguardando análise'}")
 
         try:
             itens = carregar_itens(url, key, oportunidade_id)
         except Exception as exc:
-            st.error(f"N�o foi poss�vel carregar os itens: {exc}")
+            st.error(f"Não foi possível carregar os itens: {exc}")
             itens = []
 
         if not itens:
             st.warning(
-                "Os itens desta oportunidade ainda n�o foram importados. O rob� far� o detalhamento "
-                "na pr�xima execu��o."
+                "Os itens desta oportunidade ainda não foram importados. O robô fará o detalhamento "
+                "na próxima execução."
             )
         else:
             item_por_id = {int(item["id"]): item for item in itens}
@@ -319,25 +353,25 @@ with aba_cotacoes:
                 "Item para cotar",
                 list(item_por_id),
                 format_func=lambda codigo: (
-                    f"Item {item_por_id[codigo]['numero_item']} � "
+                    f"Item {item_por_id[codigo]['numero_item']} · "
                     f"{item_por_id[codigo]['descricao'][:135]}"
                 ),
             )
             item = item_por_id[item_id]
             i1, i2, i3, i4 = st.columns(4)
             i1.metric("Quantidade", f"{numero(item.get('quantidade')):g}")
-            i2.metric("Unidade", item.get("unidade_medida") or "-")
-            i3.metric("Estimativa unit�ria", brl(item.get("valor_unitario_estimado")))
-            i4.metric("Benef�cio ME/EPP", item.get("beneficio_me_epp") or "N�o informado")
+            i2.metric("Unidade", item.get("unidade_medida") or "—")
+            i3.metric("Estimativa unitária", brl(item.get("valor_unitario_estimado")))
+            i4.metric("Benefício ME/EPP", item.get("beneficio_me_epp") or "Não informado")
             st.write(item.get("descricao"))
 
             consulta_padrao = item.get("consulta_cotacao") or consulta_enxuta(item.get("descricao") or "")
             consulta = st.text_input(
-                "Termo de pesquisa (ajuste marca, modelo e especifica��o antes de cotar)",
+                "Termo de pesquisa (ajuste marca, modelo e especificação antes de cotar)",
                 value=consulta_padrao,
                 key=f"consulta_{item_id}",
             )
-            if st.button("Pesquisar e gravar cota��es", type="primary", key=f"pesquisar_{item_id}"):
+            if st.button("Pesquisar e gravar cotações", type="primary", key=f"pesquisar_{item_id}"):
                 serper_key = st.secrets.get("SERPER_API_KEY", os.environ.get("SERPER_API_KEY", ""))
                 with st.spinner("Comparando fornecedores em paralelo..."):
                     novas, avisos = buscar_cotacoes(
@@ -360,20 +394,20 @@ with aba_cotacoes:
                         carregar_itens.clear()
                         carregar_cotacoes.clear()
                         if novas:
-                            st.success(f"{len(novas)} cota��o(�es) autom�tica(s) gravada(s).")
+                            st.success(f"{len(novas)} cotação(ões) automática(s) gravada(s).")
                         else:
-                            st.warning("Nenhum pre�o autom�tico foi encontrado para esse termo.")
+                            st.warning("Nenhum preço automático foi encontrado para esse termo.")
                         for aviso in avisos:
                             st.caption(aviso)
                     except Exception as exc:
-                        st.error(f"N�o foi poss�vel gravar as cota��es: {exc}")
+                        st.error(f"Não foi possível gravar as cotações: {exc}")
 
             informatica = eh_informatica(oportunidade.get("categoria") or "", item.get("descricao") or "")
             links = links_de_pesquisa(consulta, incluir_informatica=informatica)
-            with st.expander("Abrir pesquisa nas lojas confi�veis", expanded=False):
+            with st.expander("Abrir pesquisa nas lojas confiáveis", expanded=False):
                 st.caption(
-                    "Estes bot�es abrem a busca na loja. Confira modelo, estoque, frete, prazo, "
-                    "nota fiscal e reputa��o do vendedor antes de registrar a cota��o."
+                    "Estes botões abrem a busca na loja. Confira modelo, estoque, frete, prazo, "
+                    "nota fiscal e reputação do vendedor antes de registrar a cotação."
                 )
                 colunas_lojas = st.columns(4)
                 for indice, (nome, link) in enumerate(links.items()):
@@ -382,30 +416,31 @@ with aba_cotacoes:
             try:
                 cotacoes = carregar_cotacoes(url, key, item_id)
             except Exception as exc:
-                st.error(f"N�o foi poss�vel carregar as cota��es: {exc}")
+                st.error(f"Não foi possível carregar as cotações: {exc}")
                 cotacoes = []
 
-            st.subheader("Cota��es encontradas")
+            st.subheader("Cotações encontradas")
             if cotacoes:
                 df_cotacoes = pd.DataFrame(cotacoes)
                 df_cotacoes["custo_total_unitario"] = pd.to_numeric(
                     df_cotacoes["custo_total_unitario"], errors="coerce"
                 ).fillna(0)
                 df_cotacoes = df_cotacoes.sort_values("custo_total_unitario")
+                df_cotacoes["preco_br"] = df_cotacoes["preco_unitario"].map(brl)
+                df_cotacoes["frete_br"] = df_cotacoes["frete"].map(brl)
+                df_cotacoes["custo_br"] = df_cotacoes["custo_total_unitario"].map(brl)
                 st.dataframe(
                     df_cotacoes[
                         [
-                            "fonte", "fornecedor", "produto", "preco_unitario", "frete",
-                            "custo_total_unitario", "entrega", "retirada_local", "localidade",
+                            "fonte", "fornecedor", "produto", "preco_br", "frete_br",
+                            "custo_br", "entrega", "retirada_local", "localidade",
                             "prazo", "url", "consultado_em",
                         ]
                     ],
                     column_config={
-                        "preco_unitario": st.column_config.NumberColumn("Pre�o", format="R$ %.2f"),
-                        "frete": st.column_config.NumberColumn("Frete unit�rio", format="R$ %.2f"),
-                        "custo_total_unitario": st.column_config.NumberColumn(
-                            "Custo unit�rio", format="R$ %.2f"
-                        ),
+                        "preco_br": "Preço",
+                        "frete_br": "Frete unitário",
+                        "custo_br": "Custo unitário",
                         "url": st.column_config.LinkColumn("Oferta", display_text="Abrir"),
                         "consultado_em": st.column_config.DatetimeColumn("Consultado em", format="DD/MM/YYYY HH:mm"),
                     },
@@ -414,10 +449,10 @@ with aba_cotacoes:
                 )
                 cotacao_por_id = {int(c["id"]): c for c in cotacoes}
                 cotacao_id = st.selectbox(
-                    "Cota��o usada no c�lculo",
+                    "Cotação usada no cálculo",
                     list(cotacao_por_id),
                     format_func=lambda codigo: (
-                        f"{cotacao_por_id[codigo]['fornecedor']} � "
+                        f"{cotacao_por_id[codigo]['fornecedor']} · "
                         f"{brl(cotacao_por_id[codigo]['custo_total_unitario'])} por unidade"
                     ),
                 )
@@ -425,19 +460,19 @@ with aba_cotacoes:
                 custo_padrao = numero(cotacao_escolhida.get("custo_total_unitario"))
                 logistica = []
                 if cotacao_escolhida.get("entrega"):
-                    logistica.append("entrega dispon�vel")
+                    logistica.append("entrega disponível")
                 if cotacao_escolhida.get("retirada_local"):
                     logistica.append("retirada no local")
                 st.success(
-                    f"Melhor refer�ncia selecionada: {cotacao_escolhida['fornecedor']} � "
+                    f"Melhor referência selecionada: {cotacao_escolhida['fornecedor']} · "
                     f"{brl(custo_padrao)} por unidade"
-                    + (f" � {', '.join(logistica)}" if logistica else "")
+                    + (f" · {', '.join(logistica)}" if logistica else "")
                 )
             else:
                 custo_padrao = 0.0
-                st.info("Ainda n�o h� cota��es gravadas para este item.")
+                st.info("Ainda não há cotações gravadas para este item.")
 
-            with st.expander("Registrar uma cota��o manual", expanded=not bool(cotacoes)):
+            with st.expander("Registrar uma cotação manual", expanded=not bool(cotacoes)):
                 with st.form(f"cotacao_manual_{item_id}", clear_on_submit=True):
                     c1, c2 = st.columns(2)
                     fornecedor = c1.text_input("Fornecedor")
@@ -445,17 +480,17 @@ with aba_cotacoes:
                     produto = st.text_input("Produto/modelo cotado", value=consulta)
                     url_oferta = st.text_input("Link da oferta")
                     p1, p2, p3 = st.columns(3)
-                    preco = p1.number_input("Pre�o unit�rio", min_value=0.0, step=1.0)
+                    preco = p1.number_input("Preço unitário", min_value=0.0, step=1.0)
                     frete = p2.number_input("Frete por unidade", min_value=0.0, step=1.0)
                     prazo = p3.text_input("Prazo de entrega")
                     e1, e2 = st.columns(2)
-                    entrega = e1.checkbox("Entrega dispon�vel")
+                    entrega = e1.checkbox("Entrega disponível")
                     retirada = e2.checkbox("Retirada no local")
-                    localidade = st.text_input("Endere�o/local de retirada")
-                    salvar_manual = st.form_submit_button("Salvar cota��o manual")
+                    localidade = st.text_input("Endereço/local de retirada")
+                    salvar_manual = st.form_submit_button("Salvar cotação manual")
                     if salvar_manual:
                         if not fornecedor or not produto or not url_oferta or preco <= 0:
-                            st.error("Informe fornecedor, produto, link e um pre�o maior que zero.")
+                            st.error("Informe fornecedor, produto, link e um preço maior que zero.")
                         else:
                             try:
                                 supabase.table("cotacoes").upsert(
@@ -477,10 +512,10 @@ with aba_cotacoes:
                                     on_conflict="oportunidade_item_id,fonte,fornecedor,url",
                                 ).execute()
                                 carregar_cotacoes.clear()
-                                st.success("Cota��o manual salva.")
+                                st.success("Cotação manual salva.")
                                 st.rerun()
                             except Exception as exc:
-                                st.error(f"N�o foi poss�vel salvar a cota��o: {exc}")
+                                st.error(f"Não foi possível salvar a cotação: {exc}")
 
             st.subheader("Calculadora de margem deste item")
             calc1, calc2, calc3 = st.columns(3)
@@ -488,13 +523,13 @@ with aba_cotacoes:
                 "Quantidade", min_value=0.0, value=numero(item.get("quantidade")), step=1.0
             )
             venda_unitaria = calc2.number_input(
-                "Valor unit�rio previsto no edital",
+                "Valor unitário previsto no edital",
                 min_value=0.0,
                 value=numero(item.get("valor_unitario_estimado")),
                 step=1.0,
             )
             custo_unitario = calc3.number_input(
-                "Custo unit�rio completo", min_value=0.0, value=custo_padrao, step=1.0
+                "Custo unitário completo", min_value=0.0, value=custo_padrao, step=1.0
             )
             tributos = numero(configuracao.get("custos_tributarios"))
             risco = numero(configuracao.get("reserva_risco"), 5)
@@ -503,39 +538,39 @@ with aba_cotacoes:
             r1, r2, r3, r4 = st.columns(4)
             r1.metric("Receita prevista", brl(resultado["receita"]))
             r2.metric("Custo dos produtos", brl(resultado["custo_produtos"]))
-            r3.metric("Lucro ap�s reservas", brl(resultado["lucro"]))
+            r3.metric("Lucro após reservas", brl(resultado["lucro"]))
             r4.metric("Margem estimada", f"{resultado['margem']:.1f}%")
             divisor = 1 - (margem_alvo + tributos + risco) / 100
             if divisor > 0 and custo_unitario > 0:
                 preco_alvo = custo_unitario / divisor
                 st.write(
-                    f"Para preservar margem l�quida de **{margem_alvo:.1f}%**, com "
+                    f"Para preservar margem líquida de **{margem_alvo:.1f}%**, com "
                     f"**{tributos:.1f}%** de tributos/custos e **{risco:.1f}%** de risco, "
-                    f"o lance unit�rio de refer�ncia � **{brl(preco_alvo)}**."
+                    f"o lance unitário de referência é **{brl(preco_alvo)}**."
                 )
                 if venda_unitaria and preco_alvo > venda_unitaria:
-                    st.warning("Com essa cota��o, o pre�o de refer�ncia supera a estimativa do �rg�o.")
+                    st.warning("Com essa cotação, o preço de referência supera a estimativa do órgão.")
 
 with aba_perfil:
-    st.subheader("Perfil usado na triagem autom�tica")
+    st.subheader("Perfil usado na triagem automática")
     st.caption(
-        "Preencha exatamente como consta no CCMEI. O rob� usa as categorias e o limite abaixo "
-        "para priorizar oportunidades; ele n�o substitui a confer�ncia jur�dica do edital."
+        "Preencha exatamente como consta no CCMEI. O robô usa as categorias e o limite abaixo "
+        "para priorizar oportunidades; ele não substitui a conferência jurídica do edital."
     )
     with st.form("perfil_mei"):
         p1, p2 = st.columns(2)
         cnpj_novo = p1.text_input("CNPJ", value=configuracao.get("cnpj") or "")
-        razao_nova = p2.text_input("Raz�o social/nome", value=configuracao.get("razao_social") or "")
+        razao_nova = p2.text_input("Razão social/nome", value=configuracao.get("razao_social") or "")
         e1, e2, e3 = st.columns(3)
         cep_novo = e1.text_input("CEP de origem", value=configuracao.get("cep") or "")
-        municipio_novo = e2.text_input("Munic�pio", value=configuracao.get("municipio") or "")
+        municipio_novo = e2.text_input("Município", value=configuracao.get("municipio") or "")
         uf_nova = e3.text_input("UF", value=configuracao.get("uf") or "RJ", max_chars=2)
         atividades = st.text_area(
             "CNAEs/atividades do CCMEI (um por linha)",
             value="\n".join(configuracao.get("atividades_cnae") or []),
         )
         categorias_novas = st.multiselect(
-            "Categorias que o MEI est� apto a fornecer",
+            "Categorias que o MEI está apto a fornecer",
             CATEGORIAS_DISPONIVEIS,
             default=[
                 categoria
@@ -545,7 +580,7 @@ with aba_perfil:
         )
         n1, n2, n3, n4 = st.columns(4)
         limite_novo = n1.number_input(
-            "Limite para prioriza��o", min_value=0.0,
+            "Limite para priorização", min_value=0.0,
             value=numero(configuracao.get("limite_oportunidade"), 80000), step=1000.0
         )
         margem_nova = n2.number_input(
@@ -582,17 +617,16 @@ with aba_perfil:
                     on_conflict="id",
                 ).execute()
                 limpar_caches()
-                st.success("Perfil salvo. A pr�xima execu��o do rob� recalcular� a ader�ncia.")
+                st.success("Perfil salvo. A próxima execução do robô recalculará a aderência.")
                 st.rerun()
             except Exception as exc:
-                st.error(f"N�o foi poss�vel salvar o perfil: {exc}")
+                st.error(f"Não foi possível salvar o perfil: {exc}")
 
     st.markdown(
-        "**Antes de participar:** confira atividade compat�vel no CCMEI, certid�es, SICAF, "
-        "exig�ncia de marca/modelo, prazo, local de entrega, quantidade, garantia e emiss�o de nota fiscal."
+        "**Antes de participar:** confira atividade compatível no CCMEI, certidões, SICAF, "
+        "exigência de marca/modelo, prazo, local de entrega, quantidade, garantia e emissão de nota fiscal."
     )
     st.link_button(
-        "Orienta��es oficiais para o MEI vender ao governo",
+        "Orientações oficiais para o MEI vender ao governo",
         "https://www.gov.br/empresas-e-negocios/pt-br/empreendedor/licitacoes-publicas/",
     )
-

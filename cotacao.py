@@ -51,7 +51,7 @@ def eh_informatica(categoria: str, descricao: str) -> bool:
 
 
 def consulta_enxuta(descricao: str, limite_palavras: int = 14) -> str:
-    texto = re.sub(r"[^\w�-�.\-/ ]+", " ", descricao or "")
+    texto = re.sub(r"[^\wÀ-ÿ.\-/ ]+", " ", descricao or "")
     palavras = [p for p in texto.split() if len(p) > 1]
     return " ".join(palavras[:limite_palavras]).strip()
 
@@ -106,7 +106,7 @@ def _booleano(valor) -> bool | None:
 
 
 def buscar_boadica(consulta: str, max_ofertas: int = 12) -> list[dict]:
-    """Consulta a API p�blica usada pelo pr�prio site BoaDica."""
+    """Consulta a API pública usada pelo próprio site BoaDica."""
     sessao = requests.Session()
     sessao.headers.update({"Accept": "application/json", "User-Agent": "friday-monitor/2.0"})
 
@@ -164,7 +164,7 @@ def buscar_boadica(consulta: str, max_ofertas: int = 12) -> list[dict]:
         if _booleano(_primeiro(oferta, "pix", "aceitaPix")):
             pagamento.append("Pix")
         if _booleano(_primeiro(oferta, "cartao", "cartaoCredito", "aceitaCartao")):
-            pagamento.append("Cart�o")
+            pagamento.append("Cartão")
         entrega = _booleano(_primeiro(oferta, "entrega", "fazEntrega"))
         resultados.append(
             {
@@ -224,7 +224,7 @@ def buscar_serper(consulta: str, api_key: str, max_ofertas: int = 15) -> list[di
                 "forma_pagamento": None,
                 "automatica": True,
                 "consultado_em": datetime.now(timezone.utc).isoformat(),
-                "observacao": "Pre�o e frete devem ser reconfirmados no carrinho da loja.",
+                "observacao": "Preço e frete devem ser reconfirmados no carrinho da loja.",
             }
         )
     return sorted(resultados, key=lambda item: item["preco_unitario"])[:max_ofertas]
@@ -239,11 +239,11 @@ def buscar_cotacoes(
     if eh_informatica(categoria, consulta):
         provedores.append(("BoaDica", lambda: buscar_boadica(consulta)))
     if serper_api_key:
-        provedores.append(("Lojas confi�veis", lambda: buscar_serper(consulta, serper_api_key)))
+        provedores.append(("Lojas confiáveis", lambda: buscar_serper(consulta, serper_api_key)))
 
     cotacoes, avisos = [], []
     if not provedores:
-        return [], ["N�o h� provedor autom�tico configurado para esta categoria."]
+        return [], ["Não há provedor automático configurado para esta categoria."]
     with ThreadPoolExecutor(max_workers=len(provedores)) as executor:
         tarefas = {executor.submit(funcao): nome for nome, funcao in provedores}
         for tarefa in as_completed(tarefas):
@@ -251,7 +251,7 @@ def buscar_cotacoes(
             try:
                 cotacoes.extend(tarefa.result())
             except Exception as exc:
-                avisos.append(f"{nome}: consulta indispon�vel ({exc}).")
+                avisos.append(f"{nome}: consulta indisponível ({exc}).")
     cotacoes.sort(key=lambda item: item["preco_unitario"] + item.get("frete", 0))
     return cotacoes, avisos
 
@@ -277,4 +277,3 @@ def calcular_resultado(
         "lucro": lucro,
         "margem": margem,
     }
-

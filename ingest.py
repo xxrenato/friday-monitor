@@ -18,7 +18,7 @@ PNCP_ITENS_URL = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{s
 PAGE_SIZE = 50
 REQUEST_TIMEOUT = 60
 BATCH_SIZE = 100
-ITEM_WORKERS = 16
+ITEM_WORKERS = 8
 _thread_local = threading.local()
 
 KEYWORD_GROUPS = {
@@ -212,7 +212,8 @@ def buscar_contratacoes() -> list[dict]:
     data_inicial = (agora - timedelta(days=dias)).strftime("%Y%m%d")
     modalidades = modalidades_configuradas()
     por_id: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=len(modalidades)) as executor:
+    # O PNCP aplica limite de requisições; modalidades seguem em fila para evitar HTTP 429.
+    with ThreadPoolExecutor(max_workers=1) as executor:
         tarefas = {
             executor.submit(
                 buscar_modalidade,

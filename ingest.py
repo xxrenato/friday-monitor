@@ -3,6 +3,7 @@ import time
 import random
 from datetime import datetime, timedelta
 from curl_cffi import requests
+from curl_cffi.requests import CurlHttpVersion
 from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
@@ -21,22 +22,20 @@ KEYWORDS = [
 ]
 
 def consultar_pncp_com_fallback(url):
-    """Consulta o PNCP forçando HTTP/1.1 e alternando perfis para evitar TCP Reset."""
-    impersonates = ["chrome110", "safari15_5", "edge101"]
+    """Consulta o PNCP usando curl_cffi forçando HTTP/1.1 com Enum correto para evitar bloqueios."""
+    impersonates = ["chrome120", "chrome110", "safari15_5"]
     
     for perfil in impersonates:
         try:
-            # http_version="1.1" impede a derrubada de conexão em HTTP/2 pelo WAF governamental
             response = requests.get(
                 url, 
                 impersonate=perfil, 
-                http_version="1.1", 
+                http_version=CurlHttpVersion.V1_1, 
                 timeout=30,
                 headers={
                     "Accept": "application/json, text/plain, */*",
                     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache"
+                    "Cache-Control": "no-cache"
                 }
             )
             if response.status_code == 200:
@@ -45,7 +44,7 @@ def consultar_pncp_com_fallback(url):
                 return []
         except Exception as e:
             print(f"Aviso com perfil {perfil}: {e}. Tentando alternativa...")
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(2, 3))
             
     return None
 

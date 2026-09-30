@@ -1,8 +1,10 @@
 import os
 import re
+import threading
 import time
 import unicodedata
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -11,39 +13,49 @@ from supabase import Client, create_client
 from urllib3.util.retry import Retry
 
 
-PNCP_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
-PAGE_SIZE = 50  # maior tamanho aceito por este endpoint do PNCP
+PNCP_CONTRATACOES_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+PNCP_ITENS_URL = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens"
+PAGE_SIZE = 50
 REQUEST_TIMEOUT = 60
 BATCH_SIZE = 100
+ITEM_WORKERS = 8
+_thread_local = threading.local()
 
 KEYWORD_GROUPS = {
-    "Informática": (
-        "informatica",
-        "computador",
-        "notebook",
-        "periferico",
-        "equipamento de ti",
-        "tecnologia da informacao",
+    "Inform�tica": (
+        "informatica", "computador", "notebook", "desktop", "monitor", "periferico",
+        "equipamento de ti", "tecnologia da informacao", "ssd", "memoria ram", "nobreak",
+        "roteador", "switch", "webcam", "teclado", "mouse",
     ),
-    "Impressão e suprimentos": ("toner", "impressora", "cartucho"),
-    "Elétrica e ferramentas": (
-        "material eletrico",
-        "lampada",
-        "cabo",
-        "ferramenta",
-        "furadeira",
-        "parafuso",
+    "Impress�o e suprimentos": ("toner", "impressora", "cartucho", "multifuncional"),
+    "Material de Escrit�rio": (
+        "material de escritorio", "papelaria", "papel a4", "caneta", "envelope",
+        "grampeador", "arquivo", "expediente",
     ),
-    "Móveis": ("moveis", "cadeira", "armario", "mesa"),
-    "Limpeza": ("limpeza", "saneante", "detergente"),
-    "Óptica, telefonia e audiovisual": (
-        "optica",
-        "telefonia",
-        "eletrodomestico",
-        "audio",
-        "video",
+    "El�trica e ferramentas": (
+        "material eletrico", "lampada", "cabo eletrico", "ferramenta", "furadeira",
+        "parafuso", "eletrico",
     ),
-    "Material médico": ("material medico", "material hospitalar"),
+    "M�veis": ("moveis", "cadeira", "armario", "mesa de escritorio", "estante"),
+    "Material de Limpeza": (
+        "material de limpeza", "limpeza", "saneante", "detergente", "desinfetante",
+        "papel higienico",
+    ),
+    "�ptica, telefonia e audiovisual": (
+        "optica", "telefonia", "telefone", "audio", "video", "projetor", "televisor",
+    ),
+    "Eletrodom�sticos": (
+        "eletrodomestico", "geladeira", "refrigerador", "micro-ondas", "bebedouro",
+        "ventilador", "ar condicionado",
+    ),
+    "Material de Constru��o": (
+        "material de construcao", "cimento", "tinta", "argamassa", "hidraulico",
+        "tubo pvc", "torneira",
+    ),
+    "EPI e uniformes": (
+        "equipamento de protecao individual", "epi", "uniforme", "bota", "luva",
+        "capacete de seguranca",
+    ),
 }
 
 
@@ -66,24 +78,22 @@ def contem_termo(texto: str, termo: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(termo)}(?!\w)", texto) is not None
 
 
-def categorizar(item: dict) -> str | None:
-    texto = normalizar(
-        " ".join(
-            filter(
-                None,
-                (
-                    item.get("objetoCompra"),
-                    item.get("informacaoComplementar"),
-                ),
-            )
-        )
-    )
+def categorizar_texto(texto: str) -> str | None:
+    texto_normalizado = normalizar(texto)
     categorias = [
         categoria
         for categoria, palavras in NORMALIZED_KEYWORDS.items()
-        if any(contem_termo(texto, palavra) for palavra in palavras)
+        if any(contem_termo(texto_normalizado, palavra) for palavra in palavras)
     ]
     return ", ".join(categorias) if categorias else None
+
+
+def categorizar(item: dict) -> str | None:
+    return categorizar_texto(
+        " ".join(
+            filter(None, (item.get("objetoCompra"), item.get("informacaoComplementar")))
+        )
+    )
 
 
 def criar_sessao_http() -> requests.Session:
@@ -100,13 +110,24 @@ def criar_sessao_http() -> requests.Session:
     adapter = HTTPAdapter(max_retries=retry)
     sessao = requests.Session()
     sessao.mount("https://", adapter)
-    sessao.headers.update(
-        {
-            "Accept": "application/json",
-            "User-Agent": "friday-monitor/1.0",
-        }
-    )
+    sessao.headers.update({"Accept": "application/json", "User-Agent": "friday-monitor/2.0"})
     return sessao
+
+
+def sessao_da_thread() -> requests.Session:
+    if not hasattr(_thread_local, "sessao"):
+        _thread_local.sessao = criar_sessao_http()
+    return _thread_local.sessao
+
+
+def modalidades_configuradas() -> list[int]:
+    valor = os.environ.get("PNCP_MODALIDADES") or os.environ.get("PNCP_MODALIDADE") or "4,6,7,8,12"
+    modalidades = []
+    for parte in valor.split(","):
+        parte = parte.strip()
+        if parte:
+            modalidades.append(int(parte))
+    return list(dict.fromkeys(modalidades))
 
 
 def consultar_pagina(
@@ -118,7 +139,7 @@ def consultar_pagina(
     pagina: int,
 ) -> tuple[list[dict], int, int]:
     resposta = sessao.get(
-        PNCP_URL,
+        PNCP_CONTRATACOES_URL,
         params={
             "dataInicial": data_inicial,
             "dataFinal": data_final,
@@ -140,50 +161,44 @@ def consultar_pagina(
 
 def buscar_contratacoes() -> list[dict]:
     dias = int(os.environ.get("PNCP_LOOKBACK_DAYS", "15"))
-    modalidade = int(os.environ.get("PNCP_MODALIDADE", "8"))
     uf = os.environ.get("PNCP_UF", "RJ").strip().upper()
-    max_paginas = int(os.environ.get("PNCP_MAX_PAGES", "100"))
-
+    max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "100"))
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_final = agora.strftime("%Y%m%d")
     data_inicial = (agora - timedelta(days=dias)).strftime("%Y%m%d")
 
     sessao = criar_sessao_http()
-    todas: list[dict] = []
-    total_paginas = 1
-    total_registros = 0
-    pagina = 1
-
-    while pagina <= min(total_paginas, max_paginas):
-        dados, total_paginas, total_registros = consultar_pagina(
-            sessao,
-            data_inicial,
-            data_final,
-            modalidade,
-            uf,
-            pagina,
-        )
-        todas.extend(dados)
-        print(
-            f"PNCP: página {pagina}/{total_paginas}, "
-            f"{len(dados)} registros recebidos."
-        )
-        if not dados:
-            break
-        pagina += 1
-        time.sleep(0.25)
-
-    if total_paginas > max_paginas:
-        raise RuntimeError(
-            f"A consulta retornou {total_paginas} páginas, acima do limite "
-            f"PNCP_MAX_PAGES={max_paginas}. Aumente o limite para não perder dados."
-        )
-
-    print(
-        f"PNCP: {len(todas)} de {total_registros} contratações carregadas "
-        f"entre {data_inicial} e {data_final}."
-    )
-    return todas
+    por_id: dict[str, dict] = {}
+    for modalidade in modalidades_configuradas():
+        total_paginas = 1
+        total_registros = 0
+        pagina = 1
+        carregados = 0
+        while pagina <= min(total_paginas, max_paginas):
+            dados, total_paginas, total_registros = consultar_pagina(
+                sessao, data_inicial, data_final, modalidade, uf, pagina
+            )
+            for item in dados:
+                identificador = item.get("numeroControlePNCP")
+                if identificador:
+                    por_id[str(identificador)] = item
+            carregados += len(dados)
+            print(
+                f"PNCP modalidade {modalidade}: p�gina {pagina}/{total_paginas}, "
+                f"{len(dados)} registros recebidos."
+            )
+            if not dados:
+                break
+            pagina += 1
+            time.sleep(0.15)
+        if total_paginas > max_paginas:
+            raise RuntimeError(
+                f"Modalidade {modalidade} retornou {total_paginas} p�ginas; "
+                f"aumente PNCP_MAX_PAGES_PER_MODALITY={max_paginas}."
+            )
+        print(f"PNCP modalidade {modalidade}: {carregados}/{total_registros} carregados.")
+    print(f"PNCP: {len(por_id)} contrata��es �nicas carregadas.")
+    return list(por_id.values())
 
 
 def construir_link(item: dict) -> str:
@@ -193,11 +208,15 @@ def construir_link(item: dict) -> str:
     sequencial = item.get("sequencialCompra")
     if cnpj and ano and sequencial:
         return f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}"
-    return (
-        item.get("linkProcessoEletronico")
-        or item.get("linkSistemaOrigem")
-        or "https://pncp.gov.br/app/editais"
-    )
+    return "https://pncp.gov.br/app/editais"
+
+
+def codigo_modalidade(item: dict) -> int | None:
+    valor = item.get("modalidadeId") or item.get("codigoModalidadeContratacao")
+    try:
+        return int(valor) if valor is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def transformar(item: dict) -> dict | None:
@@ -206,75 +225,226 @@ def transformar(item: dict) -> dict | None:
     objeto = item.get("objetoCompra")
     if not categoria or not identificador or not objeto:
         return None
-
     orgao = item.get("orgaoEntidade") or {}
     unidade = item.get("unidadeOrgao") or {}
     return {
         "id": str(identificador),
-        "orgao": orgao.get("razaoSocial") or "Órgão não informado",
+        "orgao": orgao.get("razaoSocial") or "�rg�o n�o informado",
         "objeto": objeto,
         "categoria": categoria,
         "valor_estimado": item.get("valorTotalEstimado") or 0,
-        "modalidade": item.get("modalidadeNome") or "Não informada",
+        "modalidade": item.get("modalidadeNome") or "N�o informada",
+        "modalidade_codigo": codigo_modalidade(item),
+        "modo_disputa": item.get("modoDisputaNome"),
+        "instrumento_convocatorio": item.get("tipoInstrumentoConvocatorioNome"),
+        "data_encerramento_proposta": item.get("dataEncerramentoProposta"),
+        "municipio": unidade.get("municipioNome"),
         "uf": unidade.get("ufSigla") or os.environ.get("PNCP_UF", "RJ"),
         "link": construir_link(item),
+        "link_sistema_origem": item.get("linkSistemaOrigem") or item.get("linkProcessoEletronico"),
         "data_publicacao": item.get("dataPublicacaoPncp"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "_cnpj_orgao": orgao.get("cnpj"),
+        "_ano_compra": item.get("anoCompra"),
+        "_sequencial_compra": item.get("sequencialCompra"),
     }
 
 
-def filtrar_oportunidades(contratacoes: list[dict]) -> list[dict]:
-    por_id: dict[str, dict] = {}
-    for item in contratacoes:
-        oportunidade = transformar(item)
-        if oportunidade:
-            por_id[oportunidade["id"]] = oportunidade
-    oportunidades = list(por_id.values())
-    print(f"Filtro: {len(oportunidades)} oportunidades compatíveis encontradas.")
-    return oportunidades
+def buscar_itens_pncp(oportunidade: dict) -> list[dict]:
+    cnpj = oportunidade.get("_cnpj_orgao")
+    ano = oportunidade.get("_ano_compra")
+    sequencial = oportunidade.get("_sequencial_compra")
+    if not cnpj or not ano or not sequencial:
+        return []
+    url = PNCP_ITENS_URL.format(cnpj=cnpj, ano=ano, sequencial=sequencial)
+    resposta = sessao_da_thread().get(url, timeout=REQUEST_TIMEOUT)
+    if resposta.status_code == 404:
+        return []
+    resposta.raise_for_status()
+    payload = resposta.json()
+    if isinstance(payload, list):
+        return payload
+    return payload.get("data") or payload.get("itens") or []
+
+
+def transformar_item(oportunidade_id: str, item: dict) -> dict | None:
+    numero = item.get("numeroItem")
+    descricao = item.get("descricao")
+    if numero is None or not descricao:
+        return None
+    return {
+        "oportunidade_id": oportunidade_id,
+        "numero_item": int(numero),
+        "descricao": descricao,
+        "material_ou_servico": item.get("materialOuServico"),
+        "quantidade": item.get("quantidade"),
+        "unidade_medida": item.get("unidadeMedida"),
+        "valor_unitario_estimado": item.get("valorUnitarioEstimado"),
+        "valor_total_estimado": item.get("valorTotal"),
+        "beneficio_me_epp": item.get("tipoBeneficioNome"),
+        "criterio_julgamento": item.get("criterioJulgamentoNome"),
+        "situacao": item.get("situacaoCompraItemNome"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def categoria_habilitada(categoria: str, habilitadas: list[str]) -> bool:
+    categoria_norm = normalizar(categoria)
+    return any(normalizar(valor) in categoria_norm or categoria_norm in normalizar(valor) for valor in habilitadas)
+
+
+def classificar_mei(oportunidade: dict, itens: list[dict], configuracao: dict) -> None:
+    score = 0
+    motivos = []
+    habilitadas = configuracao.get("categorias_habilitadas") or []
+    if categoria_habilitada(oportunidade["categoria"], habilitadas):
+        score += 25
+        motivos.append("categoria habilitada no perfil")
+
+    beneficios = " ".join(str(item.get("beneficio_me_epp") or "") for item in itens)
+    beneficio_norm = normalizar(beneficios)
+    exclusiva = "exclusiv" in beneficio_norm or "reservad" in beneficio_norm
+    if exclusiva:
+        score += 30
+        motivos.append("item com benef�cio para ME/EPP")
+
+    try:
+        valor = float(oportunidade.get("valor_estimado") or 0)
+        limite = float(configuracao.get("limite_oportunidade") or 80000)
+    except (TypeError, ValueError):
+        valor, limite = 0, 80000
+    if 0 < valor <= limite:
+        score += 20
+        motivos.append(f"valor at� R$ {limite:,.0f}")
+
+    modalidade = oportunidade.get("modalidade_codigo")
+    if modalidade in {6, 8}:
+        score += 15
+        motivos.append("preg�o/dispensa")
+    elif modalidade in {4, 7, 12}:
+        score += 8
+        motivos.append("modalidade monitorada")
+
+    disputa = normalizar(oportunidade.get("modo_disputa") or "")
+    if "eletronic" in normalizar(oportunidade.get("modalidade") or "") or "aberto" in disputa:
+        score += 10
+        motivos.append("participa��o eletr�nica/aberta")
+
+    score = min(score, 100)
+    if score >= 70:
+        classificacao = "Alta ader�ncia"
+    elif score >= 45:
+        classificacao = "Avaliar edital"
+    else:
+        classificacao = "Baixa ader�ncia"
+    oportunidade["score_mei"] = score
+    oportunidade["classificacao_mei"] = classificacao
+    oportunidade["motivo_classificacao"] = "; ".join(motivos) or "faltam evid�ncias para classifica��o"
+    oportunidade["exclusiva_me_epp"] = exclusiva
+
+
+def carregar_configuracao(supabase: Client) -> dict:
+    resposta = supabase.table("configuracao_empresa").select("*").eq("id", 1).limit(1).execute()
+    return (resposta.data or [{}])[0]
 
 
 def carregar_status_existentes(supabase: Client) -> dict[str, str]:
-    resposta = supabase.table("oportunidades").select("id,status").execute()
-    return {
-        str(item["id"]): item.get("status") or "Em Análise"
-        for item in (resposta.data or [])
-    }
+    todos = []
+    inicio = 0
+    while True:
+        pagina = supabase.table("oportunidades").select("id,status").range(inicio, inicio + 999).execute().data or []
+        todos.extend(pagina)
+        if len(pagina) < 1000:
+            break
+        inicio += 1000
+    return {str(item["id"]): item.get("status") or "Em An�lise" for item in todos}
 
 
-def salvar_oportunidades(supabase: Client, oportunidades: list[dict]) -> int:
-    if not oportunidades:
-        return 0
+def enriquecer_oportunidades(
+    oportunidades: list[dict], configuracao: dict
+) -> tuple[list[dict], list[dict]]:
+    itens_por_oportunidade: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=ITEM_WORKERS) as executor:
+        tarefas = {executor.submit(buscar_itens_pncp, oportunidade): oportunidade for oportunidade in oportunidades}
+        concluidas = 0
+        for tarefa in as_completed(tarefas):
+            oportunidade = tarefas[tarefa]
+            try:
+                brutos = tarefa.result()
+            except Exception as exc:
+                print(f"Itens {oportunidade['id']}: consulta falhou ({exc}).")
+                brutos = []
+            itens = [
+                transformado
+                for bruto in brutos
+                if (transformado := transformar_item(oportunidade["id"], bruto))
+            ]
+            itens_por_oportunidade[oportunidade["id"]] = itens
+            concluidas += 1
+            if concluidas % 25 == 0 or concluidas == len(oportunidades):
+                print(f"PNCP itens: {concluidas}/{len(oportunidades)} oportunidades consultadas.")
 
-    status_existentes = carregar_status_existentes(supabase)
+    todos_itens = []
     for oportunidade in oportunidades:
-        oportunidade["status"] = status_existentes.get(
-            oportunidade["id"], "Em Análise"
-        )
+        itens = itens_por_oportunidade.get(oportunidade["id"], [])
+        if itens:
+            texto_itens = " ".join(item["descricao"] for item in itens)
+            categoria_itens = categorizar_texto(texto_itens)
+            if categoria_itens:
+                oportunidade["categoria"] = categoria_itens
+        classificar_mei(oportunidade, itens, configuracao)
+        todos_itens.extend(itens)
+    return oportunidades, todos_itens
 
-    salvos = 0
-    for inicio in range(0, len(oportunidades), BATCH_SIZE):
-        lote = oportunidades[inicio : inicio + BATCH_SIZE]
-        supabase.table("oportunidades").upsert(
-            lote, on_conflict="id"
+
+def limpar_campos_internos(oportunidade: dict) -> dict:
+    return {chave: valor for chave, valor in oportunidade.items() if not chave.startswith("_")}
+
+
+def salvar_dados(
+    supabase: Client,
+    oportunidades: list[dict],
+    itens: list[dict],
+) -> tuple[int, int]:
+    status_existentes = carregar_status_existentes(supabase)
+    registros = []
+    for oportunidade in oportunidades:
+        oportunidade["status"] = status_existentes.get(oportunidade["id"], "Em An�lise")
+        registros.append(limpar_campos_internos(oportunidade))
+
+    for inicio in range(0, len(registros), BATCH_SIZE):
+        lote = registros[inicio : inicio + BATCH_SIZE]
+        supabase.table("oportunidades").upsert(lote, on_conflict="id").execute()
+        print(f"Supabase oportunidades: {min(inicio + len(lote), len(registros))}/{len(registros)}.")
+
+    for inicio in range(0, len(itens), BATCH_SIZE):
+        lote = itens[inicio : inicio + BATCH_SIZE]
+        supabase.table("oportunidade_itens").upsert(
+            lote, on_conflict="oportunidade_id,numero_item"
         ).execute()
-        salvos += len(lote)
-        print(f"Supabase: {salvos}/{len(oportunidades)} registros gravados.")
-    return salvos
+        print(f"Supabase itens: {min(inicio + len(lote), len(itens))}/{len(itens)}.")
+    return len(registros), len(itens)
 
 
 def main() -> None:
     supabase_url = os.environ.get("SUPABASE_URL", "").strip()
     supabase_key = os.environ.get("SUPABASE_KEY", "").strip()
     if not supabase_url or not supabase_key:
-        raise RuntimeError(
-            "SUPABASE_URL e SUPABASE_KEY precisam estar configuradas nos GitHub Secrets."
-        )
+        raise RuntimeError("SUPABASE_URL e SUPABASE_KEY precisam estar configuradas nos GitHub Secrets.")
 
     supabase: Client = create_client(supabase_url, supabase_key)
+    configuracao = carregar_configuracao(supabase)
     contratacoes = buscar_contratacoes()
-    oportunidades = filtrar_oportunidades(contratacoes)
-    salvos = salvar_oportunidades(supabase, oportunidades)
-    print(f"Concluído: {salvos} oportunidades sincronizadas com o Supabase.")
+    oportunidades = [oportunidade for item in contratacoes if (oportunidade := transformar(item))]
+    por_id = {oportunidade["id"]: oportunidade for oportunidade in oportunidades}
+    oportunidades = list(por_id.values())
+    print(f"Filtro: {len(oportunidades)} oportunidades compat�veis encontradas.")
+    oportunidades, itens = enriquecer_oportunidades(oportunidades, configuracao)
+    total_oportunidades, total_itens = salvar_dados(supabase, oportunidades, itens)
+    print(
+        f"Conclu�do: {total_oportunidades} oportunidades e {total_itens} itens "
+        "sincronizados com o Supabase."
+    )
 
 
 if __name__ == "__main__":

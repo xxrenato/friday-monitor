@@ -2,13 +2,15 @@ name: Executar Monitoramento PNCP
 
 on:
   schedule:
-    - cron: "0 9,15 * * 1-5" # 06h e 12h, horário de Brasília
+    - cron: "0 9,15 * * 1-5" # 06h e 12h, hor�rio de Bras�lia
   workflow_dispatch:
   push:
     branches:
       - main
     paths:
       - ingest.py
+      - cotacao.py
+      - app.py
       - requirements.txt
       - .github/workflows/rotina_pncp.yml
 
@@ -22,9 +24,9 @@ concurrency:
 jobs:
   executar-busca:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Baixar código
+      - name: Baixar c�digo
         uses: actions/checkout@v7
 
       - name: Configurar Python
@@ -33,18 +35,19 @@ jobs:
           python-version: "3.10"
           cache: pip
 
-      - name: Instalar dependências
+      - name: Instalar depend�ncias
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Validar sintaxe
-        run: python -m compileall -q ingest.py app.py
+        run: python -m compileall -q ingest.py cotacao.py app.py
 
-      - name: Executar ingestão de dados
+      - name: Executar ingest�o de dados
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           PNCP_UF: RJ
-          PNCP_MODALIDADE: "8"
+          PNCP_MODALIDADES: "4,6,7,8,12"
           PNCP_LOOKBACK_DAYS: "15"
+          PNCP_MAX_PAGES_PER_MODALITY: "100"
         run: python ingest.py
 

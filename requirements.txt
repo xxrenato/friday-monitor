@@ -1,5 +1,5 @@
-streamlit
-pandas
-supabase
-requests
-curl-cffi
+streamlit==1.64.0
+pandas==2.3.3
+supabase==2.31.0
+requests==2.34.2
+

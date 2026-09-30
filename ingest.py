@@ -1,109 +1,282 @@
 import os
+import re
 import time
-import random
+import unicodedata
 from datetime import datetime, timedelta
-from curl_cffi import requests
-from supabase import create_client, Client
+from zoneinfo import ZoneInfo
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+import requests
+from requests.adapters import HTTPAdapter
+from supabase import Client, create_client
+from urllib3.util.retry import Retry
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("⚠️ SUPABASE_URL ou SUPABASE_KEY não foram encontradas nos GitHub Secrets!")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+PNCP_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+PAGE_SIZE = 50  # maior tamanho aceito por este endpoint do PNCP
+REQUEST_TIMEOUT = 60
+BATCH_SIZE = 100
 
-KEYWORDS = [
-    "informatica", "computador", "toner", "nobreak", "perifericos", "impressora",
-    "material eletrico", "lampada", "cabo", "ferramentas", "furadeira", "parafuso",
-    "moveis", "cadeira", "armario", "mesa", "limpeza", "saneante", "detergente",
-    "optica", "telefonia", "eletrodomestico", "audio", "video", "material medico"
-]
+KEYWORD_GROUPS = {
+    "Informática": (
+        "informatica",
+        "computador",
+        "notebook",
+        "periferico",
+        "equipamento de ti",
+        "tecnologia da informacao",
+    ),
+    "Impressão e suprimentos": ("toner", "impressora", "cartucho"),
+    "Elétrica e ferramentas": (
+        "material eletrico",
+        "lampada",
+        "cabo",
+        "ferramenta",
+        "furadeira",
+        "parafuso",
+    ),
+    "Móveis": ("moveis", "cadeira", "armario", "mesa"),
+    "Limpeza": ("limpeza", "saneante", "detergente"),
+    "Óptica, telefonia e audiovisual": (
+        "optica",
+        "telefonia",
+        "eletrodomestico",
+        "audio",
+        "video",
+    ),
+    "Material médico": ("material medico", "material hospitalar"),
+}
 
-def consultar_pncp_com_fallback(url):
-    """Consulta o PNCP forçando HTTP/1.1 (inteiro 1) para evitar que o servidor aborte a conexão."""
-    impersonates = ["chrome120", "chrome110", "safari15_5"]
-    
-    for perfil in impersonates:
-        try:
-            # http_version=1 define HTTP/1.1 diretamente na libcurl sem necessidade de imports adicionais
-            response = requests.get(
-                url, 
-                impersonate=perfil, 
-                http_version=1, 
-                timeout=30,
-                headers={
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-                    "Cache-Control": "no-cache"
-                }
+
+def normalizar(texto: str) -> str:
+    sem_acentos = "".join(
+        caractere
+        for caractere in unicodedata.normalize("NFKD", texto or "")
+        if not unicodedata.combining(caractere)
+    )
+    return sem_acentos.casefold()
+
+
+NORMALIZED_KEYWORDS = {
+    categoria: tuple(normalizar(palavra) for palavra in palavras)
+    for categoria, palavras in KEYWORD_GROUPS.items()
+}
+
+
+def contem_termo(texto: str, termo: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(termo)}(?!\w)", texto) is not None
+
+
+def categorizar(item: dict) -> str | None:
+    texto = normalizar(
+        " ".join(
+            filter(
+                None,
+                (
+                    item.get("objetoCompra"),
+                    item.get("informacaoComplementar"),
+                ),
             )
-            if response.status_code == 200:
-                return response.json().get('data', [])
-            elif response.status_code == 404:
-                return []
-        except Exception as e:
-            print(f"Aviso com perfil {perfil}: {e}. Tentando alternativa...")
-            time.sleep(random.uniform(2, 3))
-            
-    return None
+        )
+    )
+    categorias = [
+        categoria
+        for categoria, palavras in NORMALIZED_KEYWORDS.items()
+        if any(contem_termo(texto, palavra) for palavra in palavras)
+    ]
+    return ", ".join(categorias) if categorias else None
 
-def buscar_e_salvar_pncp():
-    data_hoje = datetime.now().strftime("%Y%m%d")
-    data_inicial = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
-    
-    todas_contratacoes = []
-    
-    for pagina in range(1, 6):
-        url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicas?dataInicial={data_inicial}&dataFinal={data_hoje}&codigoModalidadeContratacao=8&uf=RJ&pagina={pagina}"
-        
-        print(f"Consultando página {pagina} do PNCP...")
-        dados = consultar_pncp_com_fallback(url)
-        
-        if dados is not None:
-            if not dados:
-                print(f"Sem mais dados na página {pagina}.")
-                break
-            todas_contratacoes.extend(dados)
-            print(f"✅ Página {pagina} capturada com sucesso! ({len(dados)} compras encontradas)")
-        else:
-            print(f"❌ Não foi possível obter resposta do servidor para a página {pagina}.")
-        
-        time.sleep(3)
 
-    print(f"Total de contratações analisadas no período: {len(todas_contratacoes)}")
+def criar_sessao_http() -> requests.Session:
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        status=5,
+        backoff_factor=1,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    sessao = requests.Session()
+    sessao.mount("https://", adapter)
+    sessao.headers.update(
+        {
+            "Accept": "application/json",
+            "User-Agent": "friday-monitor/1.0",
+        }
+    )
+    return sessao
 
-    novas_oportunidades = []
-    for item in todas_contratacoes:
-        objeto = (item.get('objetoContratacao') or '').lower()
-        
-        if any(kw in objeto for kw in KEYWORDS):
-            pncp_id = item.get('numeroContratacaoPNCP') or item.get('id')
-            
-            registro = {
-                "id": str(pncp_id),
-                "orgao": item.get('orgaoEntidade', {}).get('razaoSocial', 'Órgão Não Informado'),
-                "objeto": item.get('objetoContratacao'),
-                "categoria": "Geral/Multiatividade",
-                "valor_estimado": item.get('valorTotalEstimado', 0.0),
-                "modalidade": "Dispensa Eletrônica",
-                "uf": "RJ",
-                "link": item.get('linkSistemaOrigem', 'https://pncp.gov.br'),
-                "status": "Em Análise"
-            }
-            novas_oportunidades.append(registro)
 
-    print(f"Oportunidades filtradas para as suas atividades: {len(novas_oportunidades)}")
+def consultar_pagina(
+    sessao: requests.Session,
+    data_inicial: str,
+    data_final: str,
+    modalidade: int,
+    uf: str,
+    pagina: int,
+) -> tuple[list[dict], int, int]:
+    resposta = sessao.get(
+        PNCP_URL,
+        params={
+            "dataInicial": data_inicial,
+            "dataFinal": data_final,
+            "codigoModalidadeContratacao": modalidade,
+            "uf": uf,
+            "pagina": pagina,
+            "tamanhoPagina": PAGE_SIZE,
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    resposta.raise_for_status()
+    payload = resposta.json()
+    return (
+        payload.get("data") or [],
+        int(payload.get("totalPaginas") or pagina),
+        int(payload.get("totalRegistros") or 0),
+    )
+
+
+def buscar_contratacoes() -> list[dict]:
+    dias = int(os.environ.get("PNCP_LOOKBACK_DAYS", "15"))
+    modalidade = int(os.environ.get("PNCP_MODALIDADE", "8"))
+    uf = os.environ.get("PNCP_UF", "RJ").strip().upper()
+    max_paginas = int(os.environ.get("PNCP_MAX_PAGES", "100"))
+
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    data_final = agora.strftime("%Y%m%d")
+    data_inicial = (agora - timedelta(days=dias)).strftime("%Y%m%d")
+
+    sessao = criar_sessao_http()
+    todas: list[dict] = []
+    total_paginas = 1
+    total_registros = 0
+    pagina = 1
+
+    while pagina <= min(total_paginas, max_paginas):
+        dados, total_paginas, total_registros = consultar_pagina(
+            sessao,
+            data_inicial,
+            data_final,
+            modalidade,
+            uf,
+            pagina,
+        )
+        todas.extend(dados)
+        print(
+            f"PNCP: página {pagina}/{total_paginas}, "
+            f"{len(dados)} registros recebidos."
+        )
+        if not dados:
+            break
+        pagina += 1
+        time.sleep(0.25)
+
+    if total_paginas > max_paginas:
+        raise RuntimeError(
+            f"A consulta retornou {total_paginas} páginas, acima do limite "
+            f"PNCP_MAX_PAGES={max_paginas}. Aumente o limite para não perder dados."
+        )
+
+    print(
+        f"PNCP: {len(todas)} de {total_registros} contratações carregadas "
+        f"entre {data_inicial} e {data_final}."
+    )
+    return todas
+
+
+def construir_link(item: dict) -> str:
+    orgao = item.get("orgaoEntidade") or {}
+    cnpj = orgao.get("cnpj")
+    ano = item.get("anoCompra")
+    sequencial = item.get("sequencialCompra")
+    if cnpj and ano and sequencial:
+        return f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}"
+    return (
+        item.get("linkProcessoEletronico")
+        or item.get("linkSistemaOrigem")
+        or "https://pncp.gov.br/app/editais"
+    )
+
+
+def transformar(item: dict) -> dict | None:
+    categoria = categorizar(item)
+    identificador = item.get("numeroControlePNCP")
+    objeto = item.get("objetoCompra")
+    if not categoria or not identificador or not objeto:
+        return None
+
+    orgao = item.get("orgaoEntidade") or {}
+    unidade = item.get("unidadeOrgao") or {}
+    return {
+        "id": str(identificador),
+        "orgao": orgao.get("razaoSocial") or "Órgão não informado",
+        "objeto": objeto,
+        "categoria": categoria,
+        "valor_estimado": item.get("valorTotalEstimado") or 0,
+        "modalidade": item.get("modalidadeNome") or "Não informada",
+        "uf": unidade.get("ufSigla") or os.environ.get("PNCP_UF", "RJ"),
+        "link": construir_link(item),
+        "data_publicacao": item.get("dataPublicacaoPncp"),
+    }
+
+
+def filtrar_oportunidades(contratacoes: list[dict]) -> list[dict]:
+    por_id: dict[str, dict] = {}
+    for item in contratacoes:
+        oportunidade = transformar(item)
+        if oportunidade:
+            por_id[oportunidade["id"]] = oportunidade
+    oportunidades = list(por_id.values())
+    print(f"Filtro: {len(oportunidades)} oportunidades compatíveis encontradas.")
+    return oportunidades
+
+
+def carregar_status_existentes(supabase: Client) -> dict[str, str]:
+    resposta = supabase.table("oportunidades").select("id,status").execute()
+    return {
+        str(item["id"]): item.get("status") or "Em Análise"
+        for item in (resposta.data or [])
+    }
+
+
+def salvar_oportunidades(supabase: Client, oportunidades: list[dict]) -> int:
+    if not oportunidades:
+        return 0
+
+    status_existentes = carregar_status_existentes(supabase)
+    for oportunidade in oportunidades:
+        oportunidade["status"] = status_existentes.get(
+            oportunidade["id"], "Em Análise"
+        )
 
     salvos = 0
-    for op in novas_oportunidades:
-        try:
-            supabase.table("oportunidades").upsert(op, on_conflict="id").execute()
-            salvos += 1
-        except Exception as e:
-            print(f"Erro ao salvar oportunidade {op['id']}: {e}")
+    for inicio in range(0, len(oportunidades), BATCH_SIZE):
+        lote = oportunidades[inicio : inicio + BATCH_SIZE]
+        supabase.table("oportunidades").upsert(
+            lote, on_conflict="id"
+        ).execute()
+        salvos += len(lote)
+        print(f"Supabase: {salvos}/{len(oportunidades)} registros gravados.")
+    return salvos
 
-    print(f"✅ Concluído! {salvos} oportunidades gravadas com sucesso no Supabase.")
+
+def main() -> None:
+    supabase_url = os.environ.get("SUPABASE_URL", "").strip()
+    supabase_key = os.environ.get("SUPABASE_KEY", "").strip()
+    if not supabase_url or not supabase_key:
+        raise RuntimeError(
+            "SUPABASE_URL e SUPABASE_KEY precisam estar configuradas nos GitHub Secrets."
+        )
+
+    supabase: Client = create_client(supabase_url, supabase_key)
+    contratacoes = buscar_contratacoes()
+    oportunidades = filtrar_oportunidades(contratacoes)
+    salvos = salvar_oportunidades(supabase, oportunidades)
+    print(f"Concluído: {salvos} oportunidades sincronizadas com o Supabase.")
+
 
 if __name__ == "__main__":
-    buscar_e_salvar_pncp()
+    main()
+

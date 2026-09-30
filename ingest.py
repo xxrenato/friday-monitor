@@ -18,7 +18,7 @@ PNCP_ITENS_URL = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{s
 PAGE_SIZE = 50
 REQUEST_TIMEOUT = 60
 BATCH_SIZE = 100
-ITEM_WORKERS = 8
+ITEM_WORKERS = 16
 _thread_local = threading.local()
 
 KEYWORD_GROUPS = {
@@ -161,6 +161,47 @@ def consultar_pagina(
     )
 
 
+def buscar_modalidade(
+    modalidade: int,
+    data_inicial: str,
+    data_final: str,
+    uf: str,
+    max_paginas: int,
+    atraso_pagina: float,
+) -> dict[str, dict]:
+    sessao = criar_sessao_http()
+    por_id: dict[str, dict] = {}
+    total_paginas = 1
+    total_registros = 0
+    pagina = 1
+    carregados = 0
+    while pagina <= min(total_paginas, max_paginas):
+        dados, total_paginas, total_registros = consultar_pagina(
+            sessao, data_inicial, data_final, modalidade, uf, pagina
+        )
+        for item in dados:
+            identificador = item.get("numeroControlePNCP")
+            if identificador:
+                por_id[str(identificador)] = item
+        carregados += len(dados)
+        if pagina == 1 or pagina % 50 == 0 or pagina == total_paginas:
+            print(
+                f"PNCP modalidade {modalidade}: página {pagina}/{total_paginas}, "
+                f"{carregados} registros carregados."
+            )
+        if not dados:
+            break
+        pagina += 1
+        time.sleep(atraso_pagina)
+    if total_paginas > max_paginas:
+        print(
+            f"AVISO: modalidade {modalidade} retornou {total_paginas} páginas; "
+            f"foram processadas as {max_paginas} primeiras."
+        )
+    print(f"PNCP modalidade {modalidade}: {carregados}/{total_registros} carregados.")
+    return por_id
+
+
 def buscar_contratacoes() -> list[dict]:
     dias = int(os.environ.get("PNCP_LOOKBACK_DAYS", "15"))
     uf = os.environ.get("PNCP_UF", "").strip().upper()
@@ -169,37 +210,27 @@ def buscar_contratacoes() -> list[dict]:
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_final = agora.strftime("%Y%m%d")
     data_inicial = (agora - timedelta(days=dias)).strftime("%Y%m%d")
-
-    sessao = criar_sessao_http()
+    modalidades = modalidades_configuradas()
     por_id: dict[str, dict] = {}
-    for modalidade in modalidades_configuradas():
-        total_paginas = 1
-        total_registros = 0
-        pagina = 1
-        carregados = 0
-        while pagina <= min(total_paginas, max_paginas):
-            dados, total_paginas, total_registros = consultar_pagina(
-                sessao, data_inicial, data_final, modalidade, uf, pagina
-            )
-            for item in dados:
-                identificador = item.get("numeroControlePNCP")
-                if identificador:
-                    por_id[str(identificador)] = item
-            carregados += len(dados)
-            print(
-                f"PNCP modalidade {modalidade}: página {pagina}/{total_paginas}, "
-                f"{len(dados)} registros recebidos."
-            )
-            if not dados:
-                break
-            pagina += 1
-            time.sleep(atraso_pagina)
-        if total_paginas > max_paginas:
-            print(
-                f"AVISO: modalidade {modalidade} retornou {total_paginas} páginas; "
-                f"foram processadas as {max_paginas} primeiras."
-            )
-        print(f"PNCP modalidade {modalidade}: {carregados}/{total_registros} carregados.")
+    with ThreadPoolExecutor(max_workers=len(modalidades)) as executor:
+        tarefas = {
+            executor.submit(
+                buscar_modalidade,
+                modalidade,
+                data_inicial,
+                data_final,
+                uf,
+                max_paginas,
+                atraso_pagina,
+            ): modalidade
+            for modalidade in modalidades
+        }
+        for tarefa in as_completed(tarefas):
+            modalidade = tarefas[tarefa]
+            try:
+                por_id.update(tarefa.result())
+            except Exception as exc:
+                raise RuntimeError(f"Falha ao consultar a modalidade {modalidade}: {exc}") from exc
     print(f"PNCP: {len(por_id)} contratações únicas carregadas.")
     return list(por_id.values())
 

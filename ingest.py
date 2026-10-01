@@ -13,7 +13,8 @@ from supabase import Client, create_client
 from urllib3.util.retry import Retry
 
 
-PNCP_CONTRATACOES_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/proposta"
+PNCP_PROPOSTAS_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/proposta"
+PNCP_PUBLICACOES_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 PNCP_ITENS_URL = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens"
 PAGE_SIZE = 50
 REQUEST_TIMEOUT = 60
@@ -132,6 +133,7 @@ def modalidades_configuradas() -> list[int]:
 
 def consultar_pagina(
     sessao: requests.Session,
+    endpoint: str,
     data_inicial: str,
     data_final: str,
     modalidade: int,
@@ -144,10 +146,12 @@ def consultar_pagina(
         "pagina": pagina,
         "tamanhoPagina": PAGE_SIZE,
     }
+    if endpoint == PNCP_PUBLICACOES_URL:
+        parametros["dataInicial"] = data_inicial
     if uf:
         parametros["uf"] = uf
     resposta = sessao.get(
-        PNCP_CONTRATACOES_URL,
+        endpoint,
         params=parametros,
         timeout=REQUEST_TIMEOUT,
     )
@@ -161,6 +165,8 @@ def consultar_pagina(
 
 
 def buscar_modalidade(
+    fonte: str,
+    endpoint: str,
     modalidade: int,
     data_inicial: str,
     data_final: str,
@@ -176,7 +182,7 @@ def buscar_modalidade(
     carregados = 0
     while pagina <= min(total_paginas, max_paginas):
         dados, total_paginas, total_registros = consultar_pagina(
-            sessao, data_inicial, data_final, modalidade, uf, pagina
+            sessao, endpoint, data_inicial, data_final, modalidade, uf, pagina
         )
         for item in dados:
             identificador = item.get("numeroControlePNCP")
@@ -185,7 +191,7 @@ def buscar_modalidade(
         carregados += len(dados)
         if pagina == 1 or pagina % 50 == 0 or pagina == total_paginas:
             print(
-                f"PNCP modalidade {modalidade}: página {pagina}/{total_paginas}, "
+                f"PNCP {fonte} modalidade {modalidade}: página {pagina}/{total_paginas}, "
                 f"{carregados} registros carregados."
             )
         if not dados:
@@ -194,10 +200,10 @@ def buscar_modalidade(
         time.sleep(atraso_pagina)
     if total_paginas > max_paginas:
         print(
-            f"AVISO: modalidade {modalidade} retornou {total_paginas} páginas; "
+            f"AVISO: {fonte} modalidade {modalidade} retornou {total_paginas} páginas; "
             f"foram processadas as {max_paginas} primeiras."
         )
-    print(f"PNCP modalidade {modalidade}: {carregados}/{total_registros} carregados.")
+    print(f"PNCP {fonte} modalidade {modalidade}: {carregados}/{total_registros} carregados.")
     return por_id
 
 
@@ -206,32 +212,48 @@ def buscar_contratacoes() -> list[dict]:
     max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "500"))
     atraso_pagina = float(os.environ.get("PNCP_PAGE_DELAY", "0.10"))
     horizonte_dias = int(os.environ.get("PNCP_PROPOSAL_HORIZON_DAYS", "7"))
+    publicacoes_dias = int(os.environ.get("PNCP_PUBLICATION_LOOKBACK_DAYS", "4"))
     trabalhadores_modalidade = int(os.environ.get("PNCP_MODALITY_WORKERS", "2"))
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    data_final = (agora + timedelta(days=horizonte_dias)).strftime("%Y%m%d")
-    data_inicial = data_final  # mantido na assinatura; o endpoint de propostas usa dataFinal.
+    propostas_ate = (agora + timedelta(days=horizonte_dias)).strftime("%Y%m%d")
+    publicacoes_de = (agora - timedelta(days=publicacoes_dias)).strftime("%Y%m%d")
+    publicacoes_ate = agora.strftime("%Y%m%d")
     modalidades = modalidades_configuradas()
     por_id: dict[str, dict] = {}
     # Duas modalidades por vez equilibram velocidade com o limite de requisições do PNCP.
     with ThreadPoolExecutor(max_workers=max(1, min(trabalhadores_modalidade, 2))) as executor:
-        tarefas = {
-            executor.submit(
+        tarefas = {}
+        for modalidade in modalidades:
+            tarefas[executor.submit(
                 buscar_modalidade,
+                "propostas abertas",
+                PNCP_PROPOSTAS_URL,
                 modalidade,
-                data_inicial,
-                data_final,
+                propostas_ate,
+                propostas_ate,
                 uf,
                 max_paginas,
                 atraso_pagina,
-            ): modalidade
-            for modalidade in modalidades
-        }
+            )] = ("propostas abertas", modalidade)
+            tarefas[executor.submit(
+                buscar_modalidade,
+                "publicações recentes",
+                PNCP_PUBLICACOES_URL,
+                modalidade,
+                publicacoes_de,
+                publicacoes_ate,
+                uf,
+                max_paginas,
+                atraso_pagina,
+            )] = ("publicações recentes", modalidade)
         for tarefa in as_completed(tarefas):
-            modalidade = tarefas[tarefa]
+            fonte, modalidade = tarefas[tarefa]
             try:
                 por_id.update(tarefa.result())
             except Exception as exc:
-                raise RuntimeError(f"Falha ao consultar a modalidade {modalidade}: {exc}") from exc
+                raise RuntimeError(
+                    f"Falha ao consultar {fonte}, modalidade {modalidade}: {exc}"
+                ) from exc
     print(f"PNCP: {len(por_id)} contratações únicas carregadas.")
     return list(por_id.values())
 

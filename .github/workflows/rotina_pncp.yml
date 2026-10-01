@@ -9,8 +9,6 @@ on:
       - main
     paths:
       - ingest.py
-      - cotacao.py
-      - app.py
       - requirements.txt
       - .github/workflows/rotina_pncp.yml
 

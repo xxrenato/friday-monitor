@@ -1,3 +1,4 @@
+import importlib
 import os
 from datetime import datetime
 
@@ -6,14 +7,17 @@ import streamlit as st
 import streamlit.components.v1 as components
 from supabase import Client, create_client
 
-from cotacao import (
-    buscar_cotacoes,
-    calcular_resultado,
-    classificar_custo,
-    consulta_enxuta,
-    eh_informatica,
-    links_de_pesquisa,
-)
+import cotacao as cotacao_mod
+
+
+# O Streamlit reaproveita módulos entre atualizações; recarregar evita código antigo em memória.
+cotacao_mod = importlib.reload(cotacao_mod)
+buscar_cotacoes = cotacao_mod.buscar_cotacoes
+calcular_resultado = cotacao_mod.calcular_resultado
+classificar_custo = cotacao_mod.classificar_custo
+consulta_enxuta = cotacao_mod.consulta_enxuta
+eh_informatica = cotacao_mod.eh_informatica
+links_de_pesquisa = cotacao_mod.links_de_pesquisa
 
 
 st.set_page_config(

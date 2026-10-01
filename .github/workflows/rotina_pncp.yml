@@ -24,7 +24,7 @@ concurrency:
 jobs:
   executar-busca:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Baixar código
         uses: actions/checkout@v7
@@ -47,7 +47,9 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           PNCP_UF: "" # vazio = Brasil inteiro
           PNCP_MODALIDADES: "4,6,7,8,12"
-          PNCP_PROPOSAL_HORIZON_DAYS: "30"
-          PNCP_MAX_PAGES_PER_MODALITY: "500"
+          PNCP_PROPOSAL_HORIZON_DAYS: "7"
+          PNCP_MODALITY_WORKERS: "2"
+          PNCP_MAX_PAGES_PER_MODALITY: "250"
           PNCP_PAGE_DELAY: "0.10"
         run: python ingest.py
+

@@ -205,14 +205,15 @@ def buscar_contratacoes() -> list[dict]:
     uf = os.environ.get("PNCP_UF", "").strip().upper()
     max_paginas = int(os.environ.get("PNCP_MAX_PAGES_PER_MODALITY", "500"))
     atraso_pagina = float(os.environ.get("PNCP_PAGE_DELAY", "0.10"))
-    horizonte_dias = int(os.environ.get("PNCP_PROPOSAL_HORIZON_DAYS", "30"))
+    horizonte_dias = int(os.environ.get("PNCP_PROPOSAL_HORIZON_DAYS", "7"))
+    trabalhadores_modalidade = int(os.environ.get("PNCP_MODALITY_WORKERS", "2"))
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_final = (agora + timedelta(days=horizonte_dias)).strftime("%Y%m%d")
     data_inicial = data_final  # mantido na assinatura; o endpoint de propostas usa dataFinal.
     modalidades = modalidades_configuradas()
     por_id: dict[str, dict] = {}
-    # O PNCP aplica limite de requisições; modalidades seguem em fila para evitar HTTP 429.
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    # Duas modalidades por vez equilibram velocidade com o limite de requisições do PNCP.
+    with ThreadPoolExecutor(max_workers=max(1, min(trabalhadores_modalidade, 2))) as executor:
         tarefas = {
             executor.submit(
                 buscar_modalidade,
@@ -523,3 +524,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

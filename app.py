@@ -161,17 +161,31 @@ if not df.empty:
     df["data_abertura_proposta"] = pd.to_datetime(
         df.get("data_abertura_proposta"), errors="coerce", utc=True
     )
-    if "oportunidade_aberta" not in df:
-        df["oportunidade_aberta"] = False
-    df["oportunidade_aberta"] = df["oportunidade_aberta"].fillna(False).astype(bool)
     agora_utc = pd.Timestamp.now(tz="UTC")
-    df_abertas = df[
-        df["oportunidade_aberta"]
-        & df["data_encerramento_proposta"].notna()
+    limite_semana = agora_utc + pd.Timedelta(days=7)
+    situacao = df.get("situacao_compra", pd.Series("", index=df.index)).fillna("").astype(str)
+    encerradas = situacao.str.contains(
+        "anulad|revogad|suspens|cancelad|encerrad|homologad|fracassad|desert",
+        case=False,
+        regex=True,
+    )
+    df_monitoradas = df[
+        df["data_encerramento_proposta"].notna()
         & (df["data_encerramento_proposta"] >= agora_utc)
+        & ~encerradas
     ].copy()
+
+    abertura = df_monitoradas["data_abertura_proposta"]
+    aberta_agora = abertura.isna() | (abertura <= agora_utc)
+    abre_na_semana = (abertura > agora_utc) & (abertura <= limite_semana)
+    df_monitoradas["alerta_prazo"] = "🔴 Cadastrada para depois"
+    df_monitoradas.loc[abre_na_semana, "alerta_prazo"] = "🟡 Abre nesta semana"
+    df_monitoradas.loc[aberta_agora, "alerta_prazo"] = "🟢 Aberta agora"
+    df_monitoradas["ordem_alerta"] = df_monitoradas["alerta_prazo"].map(
+        {"🟢 Aberta agora": 0, "🟡 Abre nesta semana": 1, "🔴 Cadastrada para depois": 2}
+    ).fillna(3)
 else:
-    df_abertas = df.copy()
+    df_monitoradas = df.copy()
 
 aba_oportunidades, aba_cotacoes, aba_perfil = st.tabs(
     ["🎯 Oportunidades", "🛒 Itens, cotações e margem", "🏢 Perfil do MEI"]
@@ -181,6 +195,10 @@ with aba_oportunidades:
     if df.empty:
         st.info("Nenhuma oportunidade encontrada. Aguarde a próxima execução do robô.")
     else:
+        st.caption(
+            "🟢 recebendo propostas agora · 🟡 abre nos próximos 7 dias · "
+            "🔴 cadastrada, com abertura mais adiante"
+        )
         f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
         busca = f1.text_input("Buscar no órgão ou objeto", key="busca_oportunidades")
         categorias = f2.multiselect(
@@ -192,16 +210,21 @@ with aba_oportunidades:
         classificacoes = f4.multiselect(
             "Aderência ao MEI",
             ["Alta aderência", "Avaliar edital", "Baixa aderência", "Ainda não classificada"],
-            default=["Alta aderência", "Avaliar edital"],
+            default=["Alta aderência", "Avaliar edital", "Baixa aderência"],
             key="filtro_aderencia",
         )
-        status_selecionados = st.multiselect(
-            "Status interno",
-            STATUS_OPTIONS,
+        s1, s2 = st.columns(2)
+        status_selecionados = s1.multiselect(
+            "Status interno", STATUS_OPTIONS,
             default=["Em Análise", "Cotando Fornecedor", "Proposta Cadastrada"],
         )
+        alertas_selecionados = s2.multiselect(
+            "Alerta de prazo",
+            ["🟢 Aberta agora", "🟡 Abre nesta semana", "🔴 Cadastrada para depois"],
+            default=["🟢 Aberta agora", "🟡 Abre nesta semana", "🔴 Cadastrada para depois"],
+        )
 
-        filtrado = df_abertas.copy()
+        filtrado = df_monitoradas.copy()
         if busca:
             mascara = (
                 filtrado["orgao"].str.contains(busca, case=False, regex=False, na=False)
@@ -216,30 +239,37 @@ with aba_oportunidades:
             filtrado = filtrado[filtrado["classificacao_mei"].isin(classificacoes)]
         if status_selecionados:
             filtrado = filtrado[filtrado["status"].isin(status_selecionados)]
+        if alertas_selecionados:
+            filtrado = filtrado[filtrado["alerta_prazo"].isin(alertas_selecionados)]
         filtrado = filtrado.sort_values(
-            ["score_mei", "data_encerramento_proposta"],
-            ascending=[False, True],
+            ["ordem_alerta", "data_abertura_proposta", "score_mei", "data_encerramento_proposta"],
+            ascending=[True, True, False, True],
             na_position="last",
         )
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Oportunidades filtradas", len(filtrado))
-        m2.metric("Alta aderência", int((filtrado["classificacao_mei"] == "Alta aderência").sum()))
-        m3.metric("Dispensas", int(filtrado["modalidade"].str.contains("Dispensa", case=False, na=False).sum()))
-        m4.metric("Pregões", int(filtrado["modalidade"].str.contains("Pregão", case=False, na=False).sum()))
+        m2.metric("🟢 Abertas agora", int((filtrado["alerta_prazo"] == "🟢 Aberta agora").sum()))
+        m3.metric("🟡 Abrem na semana", int((filtrado["alerta_prazo"] == "🟡 Abre nesta semana").sum()))
+        m4.metric("🔴 Cadastradas", int((filtrado["alerta_prazo"] == "🔴 Cadastrada para depois").sum()))
+        st.caption(
+            f"Pregões: {int(filtrado['modalidade'].str.contains('Pregão', case=False, na=False).sum())} · "
+            f"Dispensas: {int(filtrado['modalidade'].str.contains('Dispensa', case=False, na=False).sum())} · "
+            "abrangência: Brasil inteiro"
+        )
 
         if filtrado.empty:
-            if df_abertas.empty:
+            if df_monitoradas.empty:
                 st.warning(
-                    "O robô está atualizando as oportunidades abertas. Processos encerrados ou "
-                    "sem prazo válido não são exibidos."
+                    "A busca semanal está sendo atualizada para o Brasil inteiro. Processos encerrados "
+                    "ou sem prazo válido não são exibidos."
                 )
             else:
                 st.warning("Nenhum registro corresponde aos filtros selecionados.")
         else:
             colunas = [
-                "classificacao_mei", "score_mei", "modalidade", "janela_disputa",
-                "data_encerramento_proposta", "orgao", "objeto", "categoria",
+                "alerta_prazo", "classificacao_mei", "score_mei", "modalidade", "janela_disputa",
+                "data_abertura_proposta", "data_encerramento_proposta", "orgao", "objeto", "categoria",
                 "valor_estimado_br", "municipio", "uf", "link", "link_sistema_origem",
                 "status", "id",
             ]
@@ -251,6 +281,7 @@ with aba_oportunidades:
                 filtrado[colunas],
                 column_config={
                     "id": st.column_config.TextColumn("Identificação PNCP", width="medium"),
+                    "alerta_prazo": st.column_config.TextColumn("Alerta", width="medium"),
                     "classificacao_mei": st.column_config.TextColumn("Aderência ao MEI", width="small"),
                     "score_mei": st.column_config.ProgressColumn(
                         "Pontuação", min_value=0, max_value=100, width="small"
@@ -262,6 +293,9 @@ with aba_oportunidades:
                     "categoria": st.column_config.TextColumn("Categoria", width="medium"),
                     "valor_estimado_br": st.column_config.TextColumn("Valor estimado", width="medium"),
                     "municipio": st.column_config.TextColumn("Município", width="medium"),
+                    "data_abertura_proposta": st.column_config.DatetimeColumn(
+                        "Início das propostas", format="DD/MM/YYYY HH:mm", width="medium"
+                    ),
                     "data_encerramento_proposta": st.column_config.DatetimeColumn(
                         "Fim das propostas", format="DD/MM/YYYY HH:mm", width="medium"
                     ),
@@ -302,11 +336,11 @@ with aba_oportunidades:
                         st.error(f"Não foi possível salvar os status: {exc}")
 
 with aba_cotacoes:
-    if df_abertas.empty:
+    if df_monitoradas.empty:
         st.info("As cotações ficarão disponíveis quando a atualização das oportunidades abertas terminar.")
     else:
-        opcoes = df_abertas["id"].astype(str).tolist()
-        mapa = df_abertas.set_index(df_abertas["id"].astype(str)).to_dict("index")
+        opcoes = df_monitoradas["id"].astype(str).tolist()
+        mapa = df_monitoradas.set_index(df_monitoradas["id"].astype(str)).to_dict("index")
 
         def rotulo_oportunidade(identificador: str) -> str:
             oportunidade = mapa.get(identificador, {})
@@ -630,3 +664,4 @@ with aba_perfil:
         "Orientações oficiais para o MEI vender ao governo",
         "https://www.gov.br/empresas-e-negocios/pt-br/empreendedor/licitacoes-publicas/",
     )
+

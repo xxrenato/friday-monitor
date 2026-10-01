@@ -50,6 +50,38 @@ TERMOS_GENERICOS_LICITACAO = {
     "de", "da", "do", "das", "dos", "e", "em", "por", "um", "uma",
 }
 
+FAMILIAS_PRINCIPAIS = {
+    "Smartphone": ("smartphone", "celular", "iphone", "telefone movel"),
+    "Tablet": ("tablet", "ipad"),
+    "Notebook": ("notebook", "laptop", "ultrabook"),
+    "Computador": ("computador", "desktop", "microcomputador"),
+    "Servidor/NAS": ("servidor", " nas ", "network attached storage", "storage de discos"),
+    "Monitor": ("monitor",),
+    "Impressora": ("impressora", "multifuncional"),
+    "Scanner": ("scanner", "digitalizador"),
+    "Projetor": ("projetor", "datashow"),
+    "Televisor": ("televisor", "smart tv", "televisao"),
+    "Papel": (" papel ", "resma"),
+    "Toner": ("toner",),
+    "Cartucho": ("cartucho",),
+    "Mouse": (" mouse ",),
+    "Teclado": ("teclado",),
+    "Roteador": ("roteador",),
+    "Switch de rede": ("switch de rede", "switch ethernet"),
+    "Nobreak": ("nobreak", "no-break"),
+    "Webcam": ("webcam",),
+    "Headset": ("headset", "fone com microfone"),
+    "Cadeira": ("cadeira",),
+    "Mesa": (" mesa ",),
+}
+
+FAMILIAS_COMPONENTES = {
+    "SSD": (" ssd ", "unidade de estado solido"),
+    "HD": (" hd ", " hdd ", "disco rigido"),
+    "Memória RAM": ("memoria ram", " ddr3 ", " ddr4 ", " ddr5 "),
+    "Pen drive": ("pen drive", "pendrive"),
+}
+
 DOMINIOS_CONFIAVEIS = (
     "amazon.com.br", "mercadolivre.com.br", "magazineluiza.com.br",
     "shopee.com.br", "aliexpress.com", "pt.aliexpress.com",
@@ -114,6 +146,60 @@ def links_pesquisa_ampla(consulta: str, incluir_informatica: bool = True) -> dic
     if incluir_informatica:
         links["BoaDica"] = BOADICA_SITE
     return links
+
+
+def _familias_encontradas(texto: str) -> set[str]:
+    normalizado = f" {_normalizar(texto)} "
+    principais = {
+        familia
+        for familia, termos in FAMILIAS_PRINCIPAIS.items()
+        if any(termo in normalizado for termo in termos)
+    }
+    if principais:
+        return principais
+    return {
+        familia
+        for familia, termos in FAMILIAS_COMPONENTES.items()
+        if any(termo in normalizado for termo in termos)
+    }
+
+
+def _tokens_produto(texto: str) -> set[str]:
+    ignorar = TERMOS_GENERICOS_LICITACAO | {
+        "com", "sem", "tipo", "modelo", "marca", "cor", "novo", "nova",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", _normalizar(texto))
+        if len(token) > 2 and token not in ignorar
+    }
+
+
+def avaliar_aderencia_produto(produto: str, referencia: str) -> str:
+    """Faz uma triagem textual; a conferência do modelo e do edital continua obrigatória."""
+    familias_referencia = _familias_encontradas(referencia)
+    familias_produto = _familias_encontradas(produto)
+    if familias_referencia:
+        if familias_referencia & familias_produto:
+            return "🟢 Mesma família de produto"
+        return "🔴 Família de produto diferente"
+
+    tokens_referencia = _tokens_produto(referencia)
+    tokens_produto = _tokens_produto(produto)
+    if not tokens_referencia or not tokens_produto:
+        return "🟡 Conferir especificações"
+    proporcao = len(tokens_referencia & tokens_produto) / min(
+        len(tokens_referencia), len(tokens_produto)
+    )
+    if proporcao >= 0.45:
+        return "🟢 Correspondência textual alta"
+    if proporcao >= 0.20:
+        return "🟡 Correspondência parcial"
+    return "🔴 Correspondência textual baixa"
+
+
+def produto_corresponde(produto: str, referencia: str) -> bool:
+    return not avaliar_aderencia_produto(produto, referencia).startswith("🔴")
 
 
 def _tipo_jsonld(valor) -> set[str]:
@@ -427,6 +513,7 @@ def buscar_cotacoes(
     consulta: str,
     categoria: str = "",
     serper_api_key: str = "",
+    descricao_referencia: str = "",
 ) -> tuple[list[dict], list[str]]:
     informatica = eh_informatica(categoria, consulta)
     provedores = [
@@ -478,6 +565,20 @@ def buscar_cotacoes(
             "dos marketplaces. Enquanto essas credenciais não estiverem configuradas, use os "
             "comparadores e as lojas exibidos abaixo; todos já recebem o termo pesquisado."
         )
+    referencia = descricao_referencia or consulta
+    antes_filtro = len(cotacoes)
+    cotacoes = [
+        cotacao
+        for cotacao in cotacoes
+        if produto_corresponde(cotacao.get("produto") or "", referencia)
+    ]
+    descartadas = antes_filtro - len(cotacoes)
+    if descartadas:
+        avisos.append(
+            f"{descartadas} resultado(s) automático(s) foram descartados porque pertenciam a "
+            "outra família de produto ou tinham baixa correspondência com o pedido."
+        )
+
     cotacoes_unicas = {}
     for cotacao in cotacoes:
         chave = (

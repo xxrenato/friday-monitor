@@ -26,11 +26,28 @@ LOJAS_CONFIAVEIS = {
     "Shopee": "https://shopee.com.br/search?keyword={q}",
     "AliExpress": "https://pt.aliexpress.com/w/wholesale-{q}.html",
     "Magazine Luiza": "https://www.magazineluiza.com.br/busca/{q}/",
+    "Casas Bahia": "https://www.casasbahia.com.br/{q}/b",
+    "Carrefour": "https://www.carrefour.com.br/busca/{q}",
     "KaBuM!": "https://www.kabum.com.br/busca/{q}",
     "Pichau": "https://www.pichau.com.br/search?q={q}",
     "Terabyte": "https://www.terabyteshop.com.br/busca?str={q}",
     "Kalunga": "https://www.kalunga.com.br/busca/1?q={q}",
     "Leroy Merlin": "https://www.leroymerlin.com.br/busca?q={q}",
+}
+
+COMPARADORES_CONFIAVEIS = {
+    "Google Shopping": "https://www.google.com/search?tbm=shop&hl=pt-BR&gl=br&q={q}",
+    "Microsoft Shopping": "https://www.bing.com/shop?q={q}&cc=br&setlang=pt-BR",
+    "Buscapé": "https://www.buscape.com.br/search?q={q}",
+    "Zoom": "https://www.zoom.com.br/busca/{q}",
+}
+
+TERMOS_GENERICOS_LICITACAO = {
+    "aquisicao", "contratacao", "fornecimento", "fornecer", "compra", "material",
+    "produto", "item", "itens", "unidade", "unidades", "embalagem", "pacote",
+    "conforme", "especificacao", "especificacoes", "edital", "termo", "referencia",
+    "destinado", "destinada", "destinados", "destinadas", "para",
+    "de", "da", "do", "das", "dos", "e", "em", "por", "um", "uma",
 }
 
 DOMINIOS_CONFIAVEIS = (
@@ -66,6 +83,22 @@ def consulta_enxuta(descricao: str, limite_palavras: int = 14) -> str:
     return " ".join(palavras[:limite_palavras]).strip()
 
 
+def consulta_ampla(descricao: str, limite_palavras: int = 8) -> str:
+    """Remove linguagem de edital e conserva produto, modelo e especificações úteis."""
+    texto = re.sub(r"[^\wÀ-ÿ.\-/ ]+", " ", descricao or "")
+    escolhidas, normalizadas = [], set()
+    for palavra in texto.split():
+        normalizada = _normalizar(palavra).strip(".-/")
+        if len(normalizada) <= 1 or normalizada in TERMOS_GENERICOS_LICITACAO:
+            continue
+        if normalizada not in normalizadas:
+            escolhidas.append(palavra)
+            normalizadas.add(normalizada)
+        if len(escolhidas) >= limite_palavras:
+            break
+    return " ".join(escolhidas).strip() or consulta_enxuta(descricao, limite_palavras)
+
+
 def links_de_pesquisa(consulta: str, incluir_informatica: bool = True) -> dict[str, str]:
     q = quote_plus(consulta_enxuta(consulta))
     lojas = dict(LOJAS_CONFIAVEIS)
@@ -73,6 +106,14 @@ def links_de_pesquisa(consulta: str, incluir_informatica: bool = True) -> dict[s
         for nome in ("KaBuM!", "Pichau", "Terabyte"):
             lojas.pop(nome, None)
     return {nome: url.format(q=q) for nome, url in lojas.items()}
+
+
+def links_pesquisa_ampla(consulta: str, incluir_informatica: bool = True) -> dict[str, str]:
+    q = quote_plus(consulta_ampla(consulta))
+    links = {nome: url.format(q=q) for nome, url in COMPARADORES_CONFIAVEIS.items()}
+    if incluir_informatica:
+        links["BoaDica"] = BOADICA_SITE
+    return links
 
 
 def _tipo_jsonld(valor) -> set[str]:
@@ -192,9 +233,9 @@ def buscar_marketplaces(consulta: str, incluir_informatica: bool) -> tuple[list[
     avisos = []
     if indisponiveis:
         avisos.append(
-            "Pesquisa direta bloqueada ou sem preço legível em: "
+            "Estas lojas protegem a leitura automática ou não publicaram um preço estruturado: "
             + ", ".join(sorted(indisponiveis))
-            + ". Use os botões exibidos para conferir essas lojas."
+            + ". Os acessos diretos continuam disponíveis para conferência."
         )
     return resultados, avisos
 
@@ -339,7 +380,12 @@ def _dominio_confiavel(url: str) -> bool:
     return any(dominio == d or dominio.endswith(f".{d}") for d in DOMINIOS_CONFIAVEIS)
 
 
-def buscar_serper(consulta: str, api_key: str, max_ofertas: int = 15) -> list[dict]:
+def buscar_serper(
+    consulta: str,
+    api_key: str,
+    max_ofertas: int = 15,
+    fonte: str = "Google Shopping",
+) -> list[dict]:
     """Busca opcional no Google Shopping via Serper, limitada a lojas conhecidas."""
     if not api_key:
         return []
@@ -358,7 +404,7 @@ def buscar_serper(consulta: str, api_key: str, max_ofertas: int = 15) -> list[di
             continue
         resultados.append(
             {
-                "fonte": "Google Shopping",
+                "fonte": fonte,
                 "fornecedor": oferta.get("source") or urlparse(url).netloc,
                 "produto": oferta.get("title") or consulta,
                 "url": url,
@@ -392,7 +438,24 @@ def buscar_cotacoes(
     if informatica:
         provedores.append(("BoaDica", lambda: buscar_boadica(consulta)))
     if serper_api_key:
-        provedores.append(("Lojas confiáveis", lambda: buscar_serper(consulta, serper_api_key)))
+        provedores.extend(
+            [
+                (
+                    "Pesquisa exata",
+                    lambda: buscar_serper(
+                        consulta, serper_api_key, fonte="Google Shopping · termo exato"
+                    ),
+                ),
+                (
+                    "Pesquisa ampla",
+                    lambda: buscar_serper(
+                        consulta_ampla(consulta),
+                        serper_api_key,
+                        fonte="Google Shopping · termo amplo",
+                    ),
+                ),
+            ]
+        )
 
     cotacoes, avisos = [], []
     with ThreadPoolExecutor(max_workers=len(provedores)) as executor:
@@ -411,8 +474,9 @@ def buscar_cotacoes(
                 avisos.append(f"{nome}: consulta indisponível ({exc}).")
     if not serper_api_key:
         avisos.append(
-            "A pesquisa complementar de preços não está configurada. "
-            "As buscas diretas dos marketplaces continuam disponíveis abaixo."
+            "A importação automática ampla depende de uma API de pesquisa ou das APIs oficiais "
+            "dos marketplaces. Enquanto essas credenciais não estiverem configuradas, use os "
+            "comparadores e as lojas exibidos abaixo; todos já recebem o termo pesquisado."
         )
     cotacoes_unicas = {}
     for cotacao in cotacoes:

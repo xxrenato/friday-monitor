@@ -543,20 +543,23 @@ if aba_ativa == rotulos_abas[1]:
         else:
             item_por_id = {int(item["id"]): item for item in itens}
             item_id = st.selectbox(
-                "Item para cotar",
+                "Item para cotar · descrição fiel do edital",
                 list(item_por_id),
                 format_func=lambda codigo: (
                     f"Item {item_por_id[codigo]['numero_item']} · "
-                    f"{item_por_id[codigo]['descricao'][:135]}"
+                    f"{item_por_id[codigo]['descricao']}"
                 ),
             )
             item = item_por_id[item_id]
+            descricao_fiel = str(item.get("descricao") or "Descrição não informada no item.")
             i1, i2, i3, i4 = st.columns(4)
             i1.metric("Quantidade", f"{numero(item.get('quantidade')):g}")
             i2.metric("Unidade", item.get("unidade_medida") or "—")
             i3.metric("Estimativa unitária", brl(item.get("valor_unitario_estimado")))
             i4.metric("Benefício ME/EPP", item.get("beneficio_me_epp") or "Não informado")
-            st.write(item.get("descricao"))
+            with st.container(border=True):
+                st.markdown("**📝 Descrição fiel do item**")
+                st.write(descricao_fiel)
 
             consulta_padrao = item.get("consulta_cotacao") or consulta_enxuta(item.get("descricao") or "")
             consulta = st.text_input(

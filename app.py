@@ -3,11 +3,13 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import Client, create_client
 
 from cotacao import (
     buscar_cotacoes,
     calcular_resultado,
+    classificar_custo,
     consulta_enxuta,
     eh_informatica,
     links_de_pesquisa,
@@ -267,6 +269,32 @@ with aba_oportunidades:
             else:
                 st.warning("Nenhum registro corresponde aos filtros selecionados.")
         else:
+            mapa_atalho = filtrado.set_index(filtrado["id"].astype(str)).to_dict("index")
+            oportunidade_atalho = st.selectbox(
+                "Escolha uma oportunidade para abrir os itens e as cotações",
+                list(mapa_atalho),
+                format_func=lambda identificador: (
+                    f"{mapa_atalho[identificador].get('alerta_prazo', '')} · "
+                    f"{mapa_atalho[identificador].get('modalidade', '')} · "
+                    f"{str(mapa_atalho[identificador].get('objeto') or '')[:115]}"
+                ),
+                key="atalho_oportunidade",
+            )
+            if st.button("🛒 Abrir itens, cotações e margem", type="primary"):
+                st.session_state["oportunidade_cotacao"] = oportunidade_atalho
+                components.html(
+                    """
+                    <script>
+                    const botoes = Array.from(window.parent.document.querySelectorAll('button'));
+                    const aba = botoes.find((botao) =>
+                        botao.textContent.includes('Itens, cotações e margem')
+                    );
+                    if (aba) aba.click();
+                    </script>
+                    """,
+                    height=0,
+                )
+
             colunas = [
                 "alerta_prazo", "classificacao_mei", "score_mei", "modalidade", "janela_disputa",
                 "data_abertura_proposta", "data_encerramento_proposta", "orgao", "objeto", "categoria",
@@ -443,6 +471,10 @@ with aba_cotacoes:
                     "Estes botões abrem a busca na loja. Confira modelo, estoque, frete, prazo, "
                     "nota fiscal e reputação do vendedor antes de registrar a cotação."
                 )
+                st.caption(
+                    "Na Shopee e no AliExpress, confirme também a reputação do vendedor, emissão de "
+                    "nota fiscal brasileira, impostos de importação e prazo real de entrega."
+                )
                 colunas_lojas = st.columns(4)
                 for indice, (nome, link) in enumerate(links.items()):
                     colunas_lojas[indice % 4].link_button(nome, link, use_container_width=True)
@@ -460,48 +492,85 @@ with aba_cotacoes:
                     df_cotacoes["custo_total_unitario"], errors="coerce"
                 ).fillna(0)
                 df_cotacoes = df_cotacoes.sort_values("custo_total_unitario")
+                estimativa_item = numero(item.get("valor_unitario_estimado"))
+                df_cotacoes["indicador_preco"] = df_cotacoes["custo_total_unitario"].map(
+                    lambda custo: classificar_custo(custo, estimativa_item)
+                )
                 df_cotacoes["preco_br"] = df_cotacoes["preco_unitario"].map(brl)
                 df_cotacoes["frete_br"] = df_cotacoes["frete"].map(brl)
                 df_cotacoes["custo_br"] = df_cotacoes["custo_total_unitario"].map(brl)
+                df_cotacoes["diferenca_br"] = (
+                    estimativa_item - df_cotacoes["custo_total_unitario"]
+                ).map(brl)
+                opcoes_indicador = [
+                    "🟢 R$ 5,00 ou mais abaixo",
+                    "🟡 Até R$ 5,00 da estimativa",
+                    "🔴 Acima da estimativa",
+                    "⚪ Sem estimativa unitária",
+                ]
+                indicadores = st.multiselect(
+                    "Filtrar cotações pela comparação com a estimativa unitária",
+                    opcoes_indicador,
+                    default=opcoes_indicador,
+                    key=f"filtro_preco_{item_id}",
+                )
+                df_cotacoes_exibidas = df_cotacoes[
+                    df_cotacoes["indicador_preco"].isin(indicadores)
+                ].copy()
+                st.caption(
+                    "🟢 custo completo pelo menos R$ 5,00 abaixo · "
+                    "🟡 entre a estimativa e R$ 5,00 abaixo · 🔴 acima da estimativa"
+                )
                 st.dataframe(
-                    df_cotacoes[
+                    df_cotacoes_exibidas[
                         [
-                            "fonte", "fornecedor", "produto", "preco_br", "frete_br",
-                            "custo_br", "entrega", "retirada_local", "localidade",
+                            "indicador_preco", "fonte", "fornecedor", "produto", "preco_br", "frete_br",
+                            "custo_br", "diferenca_br", "entrega", "retirada_local", "localidade",
                             "prazo", "url", "consultado_em",
                         ]
                     ],
                     column_config={
+                        "indicador_preco": st.column_config.TextColumn("Comparação", width="medium"),
                         "preco_br": "Preço",
                         "frete_br": "Frete unitário",
-                        "custo_br": "Custo unitário",
+                        "custo_br": "Custo unitário completo",
+                        "diferenca_br": "Diferença para a estimativa",
                         "url": st.column_config.LinkColumn("Oferta", display_text="Abrir"),
                         "consultado_em": st.column_config.DatetimeColumn("Consultado em", format="DD/MM/YYYY HH:mm"),
                     },
                     hide_index=True,
                     use_container_width=True,
                 )
-                cotacao_por_id = {int(c["id"]): c for c in cotacoes}
-                cotacao_id = st.selectbox(
-                    "Cotação usada no cálculo",
-                    list(cotacao_por_id),
-                    format_func=lambda codigo: (
-                        f"{cotacao_por_id[codigo]['fornecedor']} · "
-                        f"{brl(cotacao_por_id[codigo]['custo_total_unitario'])} por unidade"
-                    ),
-                )
-                cotacao_escolhida = cotacao_por_id[cotacao_id]
-                custo_padrao = numero(cotacao_escolhida.get("custo_total_unitario"))
-                logistica = []
-                if cotacao_escolhida.get("entrega"):
-                    logistica.append("entrega disponível")
-                if cotacao_escolhida.get("retirada_local"):
-                    logistica.append("retirada no local")
-                st.success(
-                    f"Melhor referência selecionada: {cotacao_escolhida['fornecedor']} · "
-                    f"{brl(custo_padrao)} por unidade"
-                    + (f" · {', '.join(logistica)}" if logistica else "")
-                )
+                ids_exibidos = {int(codigo) for codigo in df_cotacoes_exibidas["id"].tolist()}
+                cotacao_por_id = {
+                    int(c["id"]): c for c in cotacoes if int(c["id"]) in ids_exibidos
+                }
+                if cotacao_por_id:
+                    cotacao_id = st.selectbox(
+                        "Cotação usada no cálculo",
+                        list(cotacao_por_id),
+                        format_func=lambda codigo: (
+                            f"{classificar_custo(cotacao_por_id[codigo]['custo_total_unitario'], estimativa_item)} · "
+                            f"{cotacao_por_id[codigo]['fornecedor']} · "
+                            f"{brl(cotacao_por_id[codigo]['custo_total_unitario'])} por unidade"
+                        ),
+                    )
+                    cotacao_escolhida = cotacao_por_id[cotacao_id]
+                    custo_padrao = numero(cotacao_escolhida.get("custo_total_unitario"))
+                    logistica = []
+                    if cotacao_escolhida.get("entrega"):
+                        logistica.append("entrega disponível")
+                    if cotacao_escolhida.get("retirada_local"):
+                        logistica.append("retirada no local")
+                    st.success(
+                        f"{classificar_custo(custo_padrao, estimativa_item)} · "
+                        f"Referência selecionada: {cotacao_escolhida['fornecedor']} · "
+                        f"{brl(custo_padrao)} por unidade"
+                        + (f" · {', '.join(logistica)}" if logistica else "")
+                    )
+                else:
+                    custo_padrao = 0.0
+                    st.warning("Nenhuma cotação corresponde ao filtro de preço selecionado.")
             else:
                 custo_padrao = 0.0
                 st.info("Ainda não há cotações gravadas para este item.")

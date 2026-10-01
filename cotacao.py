@@ -20,6 +20,8 @@ TERMOS_INFORMATICA = (
 LOJAS_CONFIAVEIS = {
     "Amazon": "https://www.amazon.com.br/s?k={q}",
     "Mercado Livre": "https://lista.mercadolivre.com.br/{q}",
+    "Shopee": "https://shopee.com.br/search?keyword={q}",
+    "AliExpress": "https://pt.aliexpress.com/w/wholesale-{q}.html",
     "Magazine Luiza": "https://www.magazineluiza.com.br/busca/{q}/",
     "KaBuM!": "https://www.kabum.com.br/busca/{q}",
     "Pichau": "https://www.pichau.com.br/search?q={q}",
@@ -30,6 +32,7 @@ LOJAS_CONFIAVEIS = {
 
 DOMINIOS_CONFIAVEIS = (
     "amazon.com.br", "mercadolivre.com.br", "magazineluiza.com.br",
+    "shopee.com.br", "aliexpress.com", "pt.aliexpress.com",
     "kabum.com.br", "pichau.com.br", "terabyteshop.com.br",
     "kalunga.com.br", "leroymerlin.com.br", "casasbahia.com.br",
     "carrefour.com.br", "fastshop.com.br", "dell.com", "lenovo.com",
@@ -63,6 +66,19 @@ def links_de_pesquisa(consulta: str, incluir_informatica: bool = True) -> dict[s
         for nome in ("KaBuM!", "Pichau", "Terabyte"):
             lojas.pop(nome, None)
     return {nome: url.format(q=q) for nome, url in lojas.items()}
+
+
+def classificar_custo(custo_unitario: float, estimativa_unitaria: float, folga: float = 5.0) -> str:
+    """Classifica o custo completo em relação à estimativa unitária do edital."""
+    custo = max(float(custo_unitario or 0), 0)
+    estimativa = max(float(estimativa_unitaria or 0), 0)
+    if estimativa <= 0:
+        return "⚪ Sem estimativa unitária"
+    if custo > estimativa:
+        return "🔴 Acima da estimativa"
+    if custo <= estimativa - max(folga, 0):
+        return "🟢 R$ 5,00 ou mais abaixo"
+    return "🟡 Até R$ 5,00 da estimativa"
 
 
 def _valor_numerico(valor) -> float | None:

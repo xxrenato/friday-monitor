@@ -560,7 +560,13 @@ if aba_ativa == rotulos_abas[1]:
                 value=consulta_padrao,
                 key=f"consulta_{item_id}",
             )
-            if st.button("Pesquisar e gravar cotações", type="primary", key=f"pesquisar_{item_id}"):
+            chave_pesquisas_expostas = f"pesquisas_expostas_{item_id}"
+            if st.button(
+                "Pesquisar preços e abrir marketplaces",
+                type="primary",
+                key=f"pesquisar_{item_id}",
+            ):
+                st.session_state[chave_pesquisas_expostas] = True
                 serper_key = st.secrets.get("SERPER_API_KEY", os.environ.get("SERPER_API_KEY", ""))
                 with st.spinner("Comparando fornecedores em paralelo..."):
                     novas, avisos = buscar_cotacoes(
@@ -585,7 +591,10 @@ if aba_ativa == rotulos_abas[1]:
                         if novas:
                             st.success(f"{len(novas)} cotação(ões) automática(s) gravada(s).")
                         else:
-                            st.warning("Nenhum preço automático foi encontrado para esse termo.")
+                            st.warning(
+                                "Nenhum preço pôde ser importado automaticamente. "
+                                "As pesquisas diretas nas lojas estão abertas abaixo para conferência."
+                            )
                         for aviso in avisos:
                             st.caption(aviso)
                     except Exception as exc:
@@ -593,14 +602,20 @@ if aba_ativa == rotulos_abas[1]:
 
             informatica = eh_informatica(oportunidade.get("categoria") or "", item.get("descricao") or "")
             links = links_de_pesquisa(consulta, incluir_informatica=informatica)
-            with st.expander("Abrir pesquisa nas lojas confiáveis", expanded=False):
+            with st.expander(
+                "Pesquisas diretas nas lojas e marketplaces",
+                expanded=bool(st.session_state.get(chave_pesquisas_expostas)),
+            ):
                 st.caption(
-                    "Estes botões abrem a busca na loja. Confira modelo, estoque, frete, prazo, "
-                    "nota fiscal e reputação do vendedor antes de registrar a cotação."
+                    "A busca automática tenta importar os preços publicados pelas lojas. Quando uma "
+                    "loja impede a leitura automática, o botão abaixo abre exatamente o mesmo termo "
+                    "para conferência de modelo, estoque, frete, prazo e nota fiscal."
                 )
                 st.caption(
-                    "Na Shopee e no AliExpress, confirme também a reputação do vendedor, emissão de "
-                    "nota fiscal brasileira, impostos de importação e prazo real de entrega."
+                    "As ofertas importadas aparecem em Cotações encontradas e são classificadas como "
+                    "🟢 pelo menos R$ 5,00 abaixo, 🟡 até R$ 5,00 da estimativa ou 🔴 acima. "
+                    "Na Shopee e no AliExpress, confirme também reputação, nota fiscal brasileira, "
+                    "impostos e prazo real de entrega."
                 )
                 colunas_lojas = st.columns(4)
                 for indice, (nome, link) in enumerate(links.items()):

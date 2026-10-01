@@ -12,6 +12,7 @@ import cotacao as cotacao_mod
 # O Streamlit reaproveita módulos entre atualizações; recarregar evita código antigo em memória.
 cotacao_mod = importlib.reload(cotacao_mod)
 buscar_cotacoes = cotacao_mod.buscar_cotacoes
+avaliar_aderencia_produto = cotacao_mod.avaliar_aderencia_produto
 calcular_resultado = cotacao_mod.calcular_resultado
 classificar_custo = cotacao_mod.classificar_custo
 consulta_ampla = cotacao_mod.consulta_ampla
@@ -19,6 +20,7 @@ consulta_enxuta = cotacao_mod.consulta_enxuta
 eh_informatica = cotacao_mod.eh_informatica
 links_de_pesquisa = cotacao_mod.links_de_pesquisa
 links_pesquisa_ampla = cotacao_mod.links_pesquisa_ampla
+produto_corresponde = cotacao_mod.produto_corresponde
 
 
 st.set_page_config(
@@ -575,6 +577,7 @@ if aba_ativa == rotulos_abas[1]:
                         consulta,
                         oportunidade.get("categoria") or "",
                         serper_key,
+                        item.get("descricao") or consulta,
                     )
                     try:
                         supabase.table("oportunidade_itens").update(
@@ -651,7 +654,29 @@ if aba_ativa == rotulos_abas[1]:
                 st.error(f"Não foi possível carregar as cotações: {exc}")
                 cotacoes = []
 
+            cotacoes_descartadas = [
+                cotacao
+                for cotacao in cotacoes
+                if cotacao.get("automatica")
+                and not produto_corresponde(
+                    cotacao.get("produto") or "", item.get("descricao") or consulta
+                )
+            ]
+            cotacoes = [
+                cotacao
+                for cotacao in cotacoes
+                if not cotacao.get("automatica")
+                or produto_corresponde(
+                    cotacao.get("produto") or "", item.get("descricao") or consulta
+                )
+            ]
+
             st.subheader("Cotações encontradas")
+            if cotacoes_descartadas:
+                st.caption(
+                    f"🛡️ {len(cotacoes_descartadas)} resultado(s) automático(s) antigo(s) foram "
+                    "ocultados porque não correspondem à família do item solicitado."
+                )
             if cotacoes:
                 df_cotacoes = pd.DataFrame(cotacoes)
                 df_cotacoes["custo_total_unitario"] = pd.to_numeric(
@@ -661,6 +686,16 @@ if aba_ativa == rotulos_abas[1]:
                 estimativa_item = numero(item.get("valor_unitario_estimado"))
                 df_cotacoes["indicador_preco"] = df_cotacoes["custo_total_unitario"].map(
                     lambda custo: classificar_custo(custo, estimativa_item)
+                )
+                df_cotacoes["aderencia_item"] = df_cotacoes.apply(
+                    lambda linha: (
+                        avaliar_aderencia_produto(
+                            linha.get("produto") or "", item.get("descricao") or consulta
+                        )
+                        if linha.get("automatica")
+                        else "🟡 Cotação cadastrada manualmente"
+                    ),
+                    axis=1,
                 )
                 df_cotacoes["preco_br"] = df_cotacoes["preco_unitario"].map(brl)
                 df_cotacoes["frete_br"] = df_cotacoes["frete"].map(brl)
@@ -690,12 +725,15 @@ if aba_ativa == rotulos_abas[1]:
                 st.dataframe(
                     df_cotacoes_exibidas[
                         [
-                            "indicador_preco", "fonte", "fornecedor", "produto", "preco_br", "frete_br",
+                            "aderencia_item", "indicador_preco", "fonte", "fornecedor", "produto", "preco_br", "frete_br",
                             "custo_br", "diferenca_br", "entrega", "retirada_local", "localidade",
                             "prazo", "url", "consultado_em",
                         ]
                     ],
                     column_config={
+                        "aderencia_item": st.column_config.TextColumn(
+                            "Aderência ao pedido", width="medium"
+                        ),
                         "indicador_preco": st.column_config.TextColumn("Comparação", width="medium"),
                         "preco_br": "Preço",
                         "frete_br": "Frete unitário",

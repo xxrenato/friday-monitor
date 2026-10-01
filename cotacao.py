@@ -51,6 +51,9 @@ TERMOS_GENERICOS_LICITACAO = {
 }
 
 FAMILIAS_PRINCIPAIS = {
+    "Suporte para nobreak": (
+        "suporte nobreak", "suporte para nobreak", "suporte / nobreak", "suporte/nobreak",
+    ),
     "Smartphone": ("smartphone", "celular", "iphone", "telefone movel"),
     "Tablet": ("tablet", "ipad"),
     "Notebook": ("notebook", "laptop", "ultrabook"),
@@ -150,18 +153,15 @@ def links_pesquisa_ampla(consulta: str, incluir_informatica: bool = True) -> dic
 
 def _familias_encontradas(texto: str) -> set[str]:
     normalizado = f" {_normalizar(texto)} "
-    principais = {
-        familia
-        for familia, termos in FAMILIAS_PRINCIPAIS.items()
-        if any(termo in normalizado for termo in termos)
-    }
-    if principais:
-        return principais
-    return {
-        familia
-        for familia, termos in FAMILIAS_COMPONENTES.items()
-        if any(termo in normalizado for termo in termos)
-    }
+    if "suporte" in normalizado and "nobreak" in normalizado:
+        return {"Suporte para nobreak"}
+    for familia, termos in FAMILIAS_PRINCIPAIS.items():
+        if any(termo in normalizado for termo in termos):
+            return {familia}
+    for familia, termos in FAMILIAS_COMPONENTES.items():
+        if any(termo in normalizado for termo in termos):
+            return {familia}
+    return set()
 
 
 def _tokens_produto(texto: str) -> set[str]:

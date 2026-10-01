@@ -359,8 +359,29 @@ if aba_ativa == rotulos_abas[0]:
             filtrado = filtrado.copy()
             filtrado["valor_estimado_br"] = filtrado["valor_estimado"].map(brl)
             colunas = [coluna for coluna in colunas if coluna in filtrado.columns]
-            original = filtrado.set_index("id")["status"].to_dict()
-            editado = st.data_editor(
+            ids_tabela = filtrado["id"].astype(str).tolist()
+            versao_tabela = int(st.session_state.get("versao_tabela_oportunidades", 0))
+            chave_tabela = f"tabela_oportunidades_{versao_tabela}"
+
+            def abrir_linha_selecionada() -> None:
+                """Abre a oportunidade escolhida diretamente pela linha da tabela."""
+                estado = st.session_state.get(chave_tabela) or {}
+                selecao = estado.get("selection", {})
+                linhas = list(selecao.get("rows", []))
+                if not linhas:
+                    return
+                posicao = int(linhas[0])
+                if posicao < 0 or posicao >= len(ids_tabela):
+                    return
+                st.session_state["oportunidade_cotacao"] = ids_tabela[posicao]
+                st.session_state["aba_ativa"] = rotulos_abas[1]
+                st.session_state["versao_tabela_oportunidades"] = versao_tabela + 1
+
+            st.caption(
+                "👆 Clique em qualquer linha da tabela para abrir imediatamente os itens, "
+                "as cotações e a margem daquela oportunidade."
+            )
+            st.dataframe(
                 filtrado[colunas],
                 column_config={
                     "id": st.column_config.TextColumn("Identificação PNCP", width="medium"),
@@ -389,35 +410,16 @@ if aba_ativa == rotulos_abas[0]:
                     "link_sistema_origem": st.column_config.LinkColumn(
                         "Sistema da disputa", display_text="Ir para disputa", width="small"
                     ),
-                    "status": st.column_config.SelectboxColumn(
-                        "Status interno", options=STATUS_OPTIONS, required=True, width="medium"
-                    ),
+                    "status": st.column_config.TextColumn("Status interno", width="medium"),
                 },
-                disabled=[coluna for coluna in colunas if coluna != "status"],
                 hide_index=True,
                 use_container_width=True,
                 height=520,
                 row_height=58,
+                key=chave_tabela,
+                on_select=abrir_linha_selecionada,
+                selection_mode="single-row",
             )
-            if st.button("Salvar status", type="primary"):
-                alteracoes = [
-                    (str(linha["id"]), linha["status"])
-                    for _, linha in editado.iterrows()
-                    if original.get(str(linha["id"])) != linha["status"]
-                ]
-                if not alteracoes:
-                    st.info("Nenhuma alteração de status para salvar.")
-                else:
-                    try:
-                        for identificador, status in alteracoes:
-                            supabase.table("oportunidades").update(
-                                {"status": status, "updated_at": datetime.utcnow().isoformat()}
-                            ).eq("id", identificador).execute()
-                        limpar_caches()
-                        st.success(f"{len(alteracoes)} status atualizado(s).")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Não foi possível salvar os status: {exc}")
 
 if aba_ativa == rotulos_abas[1]:
     if df_monitoradas.empty:
@@ -466,6 +468,32 @@ if aba_ativa == rotulos_abas[1]:
             "quando conveniente, Preferenciais ME/EPP."
         )
         st.caption(f"Critérios da classificação: {oportunidade.get('motivo_classificacao') or 'aguardando análise'}")
+
+        status_atual = oportunidade.get("status")
+        if status_atual not in STATUS_OPTIONS:
+            status_atual = STATUS_OPTIONS[0]
+        coluna_status, coluna_salvar_status = st.columns([3, 1])
+        status_novo = coluna_status.selectbox(
+            "Status interno desta oportunidade",
+            STATUS_OPTIONS,
+            index=STATUS_OPTIONS.index(status_atual),
+            key=f"status_oportunidade_{oportunidade_id}",
+        )
+        if coluna_salvar_status.button(
+            "Salvar status",
+            type="primary",
+            use_container_width=True,
+            key=f"salvar_status_{oportunidade_id}",
+        ):
+            try:
+                supabase.table("oportunidades").update(
+                    {"status": status_novo, "updated_at": datetime.utcnow().isoformat()}
+                ).eq("id", oportunidade_id).execute()
+                limpar_caches()
+                st.success("Status atualizado.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Não foi possível salvar o status: {exc}")
 
         try:
             itens = carregar_itens(url, key, oportunidade_id)

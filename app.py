@@ -360,32 +360,21 @@ if aba_ativa == rotulos_abas[0]:
             filtrado["valor_estimado_br"] = filtrado["valor_estimado"].map(brl)
             colunas = [coluna for coluna in colunas if coluna in filtrado.columns]
             ids_tabela = filtrado["id"].astype(str).tolist()
-            versao_tabela = int(st.session_state.get("versao_tabela_oportunidades", 0))
-            chave_tabela = f"tabela_oportunidades_{versao_tabela}"
+            chave_clique_alerta = "abrir_oportunidade_pelo_alerta"
 
-            def abrir_linha_selecionada() -> None:
-                """Abre a oportunidade escolhida diretamente pela linha da tabela."""
-                estado = st.session_state.get(chave_tabela) or {}
-                selecao = estado.get("selection", {})
-                linhas = list(selecao.get("rows", []))
-                if not linhas:
+            def abrir_alerta_da_tabela() -> None:
+                """Abre a oportunidade ao clicar no alerta colorido da linha."""
+                clique = st.session_state.get(chave_clique_alerta)
+                if not clique:
                     return
-                posicao = int(linhas[0])
+                posicao = int(clique["row"])
                 if posicao < 0 or posicao >= len(ids_tabela):
                     return
                 st.session_state["oportunidade_cotacao"] = ids_tabela[posicao]
                 st.session_state["aba_ativa"] = rotulos_abas[1]
-                st.session_state["versao_tabela_oportunidades"] = versao_tabela + 1
 
-            st.caption(
-                "👆 Clique em qualquer linha da tabela para abrir imediatamente os itens, "
-                "as cotações e a margem daquela oportunidade."
-            )
-            st.dataframe(
-                filtrado[colunas],
-                column_config={
+            configuracao_colunas = {
                     "id": st.column_config.TextColumn("Identificação PNCP", width="medium"),
-                    "alerta_prazo": st.column_config.TextColumn("Alerta", width="medium"),
                     "classificacao_mei": st.column_config.TextColumn("Aderência ao MEI", width="small"),
                     "score_mei": st.column_config.ProgressColumn(
                         "Pontuação", min_value=0, max_value=100, width="small"
@@ -411,14 +400,55 @@ if aba_ativa == rotulos_abas[0]:
                         "Sistema da disputa", display_text="Ir para disputa", width="small"
                     ),
                     "status": st.column_config.TextColumn("Status interno", width="medium"),
-                },
+                }
+
+            opcoes_tabela = {}
+            if hasattr(st.column_config, "ButtonColumn"):
+                configuracao_colunas["alerta_prazo"] = st.column_config.ButtonColumn(
+                    "Alerta · clique para abrir",
+                    width="medium",
+                    pinned=True,
+                    type="tertiary",
+                    on_click=abrir_alerta_da_tabela,
+                    key=chave_clique_alerta,
+                )
+                st.caption(
+                    "👆 Clique em 🟢 Aberta agora, 🟡 Abre nesta semana ou "
+                    "🔴 Cadastrada para depois para abrir imediatamente os itens, "
+                    "as cotações e a margem."
+                )
+            else:
+                configuracao_colunas["alerta_prazo"] = st.column_config.TextColumn(
+                    "Alerta", width="medium"
+                )
+
+                def abrir_linha_selecionada() -> None:
+                    estado = st.session_state.get("tabela_oportunidades") or {}
+                    linhas = list((estado.get("selection") or {}).get("rows", []))
+                    if not linhas:
+                        return
+                    posicao = int(linhas[0])
+                    if 0 <= posicao < len(ids_tabela):
+                        st.session_state["oportunidade_cotacao"] = ids_tabela[posicao]
+                        st.session_state["aba_ativa"] = rotulos_abas[1]
+
+                opcoes_tabela = {
+                    "on_select": abrir_linha_selecionada,
+                    "selection_mode": "single-row",
+                }
+                st.caption(
+                    "👆 Selecione a linha para abrir imediatamente os itens, as cotações e a margem."
+                )
+
+            st.dataframe(
+                filtrado[colunas],
+                column_config=configuracao_colunas,
                 hide_index=True,
                 use_container_width=True,
                 height=520,
                 row_height=58,
-                key=chave_tabela,
-                on_select=abrir_linha_selecionada,
-                selection_mode="single-row",
+                key="tabela_oportunidades",
+                **opcoes_tabela,
             )
 
 if aba_ativa == rotulos_abas[1]:
@@ -830,4 +860,5 @@ if aba_ativa == rotulos_abas[2]:
         "Orientações oficiais para o MEI vender ao governo",
         "https://www.gov.br/empresas-e-negocios/pt-br/empreendedor/licitacoes-publicas/",
     )
+
 

@@ -14,9 +14,11 @@ cotacao_mod = importlib.reload(cotacao_mod)
 buscar_cotacoes = cotacao_mod.buscar_cotacoes
 calcular_resultado = cotacao_mod.calcular_resultado
 classificar_custo = cotacao_mod.classificar_custo
+consulta_ampla = cotacao_mod.consulta_ampla
 consulta_enxuta = cotacao_mod.consulta_enxuta
 eh_informatica = cotacao_mod.eh_informatica
 links_de_pesquisa = cotacao_mod.links_de_pesquisa
+links_pesquisa_ampla = cotacao_mod.links_pesquisa_ampla
 
 
 st.set_page_config(
@@ -562,7 +564,7 @@ if aba_ativa == rotulos_abas[1]:
             )
             chave_pesquisas_expostas = f"pesquisas_expostas_{item_id}"
             if st.button(
-                "Pesquisar preços e abrir marketplaces",
+                "Pesquisar preços e mostrar todas as opções",
                 type="primary",
                 key=f"pesquisar_{item_id}",
             ):
@@ -592,8 +594,8 @@ if aba_ativa == rotulos_abas[1]:
                             st.success(f"{len(novas)} cotação(ões) automática(s) gravada(s).")
                         else:
                             st.warning(
-                                "Nenhum preço pôde ser importado automaticamente. "
-                                "As pesquisas diretas nas lojas estão abertas abaixo para conferência."
+                                "Nenhum preço pôde ser importado automaticamente desta vez. "
+                                "A pesquisa ampla e os acessos diretos já estão abertos abaixo."
                             )
                         for aviso in avisos:
                             st.caption(aviso)
@@ -601,15 +603,37 @@ if aba_ativa == rotulos_abas[1]:
                         st.error(f"Não foi possível gravar as cotações: {exc}")
 
             informatica = eh_informatica(oportunidade.get("categoria") or "", item.get("descricao") or "")
+            termo_amplo = consulta_ampla(consulta)
+            links_amplos = links_pesquisa_ampla(consulta, incluir_informatica=informatica)
             links = links_de_pesquisa(consulta, incluir_informatica=informatica)
             with st.expander(
-                "Pesquisas diretas nas lojas e marketplaces",
+                "Pesquisa ampla em comparadores",
+                expanded=bool(st.session_state.get(chave_pesquisas_expostas)),
+            ):
+                st.caption(
+                    "Para trazer mais opções, retiramos palavras administrativas do edital e "
+                    "preservamos o nome do produto, modelo e especificações relevantes."
+                )
+                st.code(termo_amplo or consulta, language=None)
+                colunas_amplas = st.columns(4)
+                for indice, (nome, link) in enumerate(links_amplos.items()):
+                    colunas_amplas[indice % 4].link_button(
+                        nome, link, use_container_width=True
+                    )
+                st.caption(
+                    "Buscapé e Zoom reúnem preços de diversas lojas; Google Shopping e Microsoft "
+                    "Shopping ampliam a pesquisa. Para informática, o BoaDica também é exibido."
+                )
+
+            with st.expander(
+                "Pesquisa exata nas lojas e marketplaces",
                 expanded=bool(st.session_state.get(chave_pesquisas_expostas)),
             ):
                 st.caption(
                     "A busca automática tenta importar os preços publicados pelas lojas. Quando uma "
-                    "loja impede a leitura automática, o botão abaixo abre exatamente o mesmo termo "
-                    "para conferência de modelo, estoque, frete, prazo e nota fiscal."
+                    "loja protege a leitura automática, o botão abaixo abre exatamente o mesmo termo "
+                    "sem tentar contornar login, CAPTCHA ou proteção antirobô. Confira modelo, estoque, "
+                    "frete, prazo, reputação e nota fiscal antes de comprar."
                 )
                 st.caption(
                     "As ofertas importadas aparecem em Cotações encontradas e são classificadas como "

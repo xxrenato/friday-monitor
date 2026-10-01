@@ -1,8 +1,10 @@
+import html
+import json
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import requests
 
@@ -15,6 +17,7 @@ TERMOS_INFORMATICA = (
     "computador", "notebook", "monitor", "teclado", "mouse", "impressora",
     "toner", "cartucho", "ssd", "hd ", "memoria", "roteador", "switch",
     "servidor", "nobreak", "webcam", "headset", "informatica", "periferico",
+    "smartphone", "celular", "telefone movel", "telefonia", "tablet",
 )
 
 LOJAS_CONFIAVEIS = {
@@ -37,6 +40,10 @@ DOMINIOS_CONFIAVEIS = (
     "kalunga.com.br", "leroymerlin.com.br", "casasbahia.com.br",
     "carrefour.com.br", "fastshop.com.br", "dell.com", "lenovo.com",
 )
+
+# As lojas abaixo são consultadas diretamente. Algumas podem bloquear leitura automatizada;
+# nesse caso, o link da pesquisa continua disponível para conferência pelo usuário.
+LOJAS_COTACAO_DIRETA = tuple(LOJAS_CONFIAVEIS)
 
 
 def _normalizar(texto: str) -> str:
@@ -66,6 +73,130 @@ def links_de_pesquisa(consulta: str, incluir_informatica: bool = True) -> dict[s
         for nome in ("KaBuM!", "Pichau", "Terabyte"):
             lojas.pop(nome, None)
     return {nome: url.format(q=q) for nome, url in lojas.items()}
+
+
+def _tipo_jsonld(valor) -> set[str]:
+    tipos = valor.get("@type") if isinstance(valor, dict) else None
+    if isinstance(tipos, str):
+        return {tipos.casefold()}
+    if isinstance(tipos, list):
+        return {str(tipo).casefold() for tipo in tipos}
+    return set()
+
+
+def _produtos_jsonld(valor):
+    """Percorre JSON-LD e devolve produtos publicados pela própria página da loja."""
+    if isinstance(valor, dict):
+        if "product" in _tipo_jsonld(valor):
+            yield valor
+        for filho in valor.values():
+            yield from _produtos_jsonld(filho)
+    elif isinstance(valor, list):
+        for filho in valor:
+            yield from _produtos_jsonld(filho)
+
+
+def _ofertas_jsonld(produto: dict):
+    ofertas = produto.get("offers") or produto.get("Offers") or []
+    if isinstance(ofertas, dict):
+        ofertas = ofertas.get("offers") or ofertas.get("itemListElement") or [ofertas]
+    if not isinstance(ofertas, list):
+        ofertas = [ofertas]
+    return [oferta for oferta in ofertas if isinstance(oferta, dict)]
+
+
+def buscar_loja_direta(nome_loja: str, url_busca: str, max_ofertas: int = 4) -> list[dict]:
+    """Lê ofertas em JSON-LD diretamente da página pública de pesquisa de uma loja."""
+    resposta = requests.get(
+        url_busca,
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "pt-BR,pt;q=0.9",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+            ),
+        },
+        timeout=12,
+    )
+    resposta.raise_for_status()
+    blocos = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        resposta.text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    resultados, vistos = [], set()
+    for bloco in blocos:
+        try:
+            payload = json.loads(html.unescape(bloco).strip())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        for produto in _produtos_jsonld(payload):
+            nome_produto = produto.get("name") or produto.get("headline") or nome_loja
+            for oferta in _ofertas_jsonld(produto):
+                preco = _valor_numerico(
+                    _primeiro(oferta, "price", "lowPrice", "highPrice")
+                )
+                link = _primeiro(oferta, "url", padrao=produto.get("url"))
+                link = urljoin(resposta.url, str(link or ""))
+                if preco is None or preco <= 0 or not link or not _dominio_confiavel(link):
+                    continue
+                chave = (nome_loja, link, round(preco, 2))
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+                resultados.append(
+                    {
+                        "fonte": nome_loja,
+                        "fornecedor": nome_loja,
+                        "produto": str(nome_produto),
+                        "url": link,
+                        "preco_unitario": round(preco, 2),
+                        "frete": 0,
+                        "entrega": True,
+                        "retirada_local": None,
+                        "localidade": None,
+                        "prazo": None,
+                        "forma_pagamento": None,
+                        "automatica": True,
+                        "consultado_em": datetime.now(timezone.utc).isoformat(),
+                        "observacao": (
+                            "Preço coletado diretamente da página pública da loja; "
+                            "confirme frete, estoque e valor no carrinho."
+                        ),
+                    }
+                )
+                if len(resultados) >= max_ofertas:
+                    return resultados
+    return resultados
+
+
+def buscar_marketplaces(consulta: str, incluir_informatica: bool) -> tuple[list[dict], list[str]]:
+    """Consulta em paralelo as páginas públicas das lojas e informa bloqueios sem interromper a busca."""
+    links = links_de_pesquisa(consulta, incluir_informatica=incluir_informatica)
+    selecionados = {
+        nome: link for nome, link in links.items() if nome in LOJAS_COTACAO_DIRETA
+    }
+    resultados, indisponiveis = [], []
+    with ThreadPoolExecutor(max_workers=min(len(selecionados), 8)) as executor:
+        tarefas = {
+            executor.submit(buscar_loja_direta, nome, link): nome
+            for nome, link in selecionados.items()
+        }
+        for tarefa in as_completed(tarefas):
+            nome = tarefas[tarefa]
+            try:
+                resultados.extend(tarefa.result())
+            except Exception:
+                indisponiveis.append(nome)
+    avisos = []
+    if indisponiveis:
+        avisos.append(
+            "Pesquisa direta bloqueada ou sem preço legível em: "
+            + ", ".join(sorted(indisponiveis))
+            + ". Use os botões exibidos para conferir essas lojas."
+        )
+    return resultados, avisos
 
 
 def classificar_custo(custo_unitario: float, estimativa_unitaria: float, folga: float = 5.0) -> str:
@@ -251,23 +382,46 @@ def buscar_cotacoes(
     categoria: str = "",
     serper_api_key: str = "",
 ) -> tuple[list[dict], list[str]]:
-    provedores = []
-    if eh_informatica(categoria, consulta):
+    informatica = eh_informatica(categoria, consulta)
+    provedores = [
+        (
+            "Lojas e marketplaces",
+            lambda: buscar_marketplaces(consulta, incluir_informatica=informatica),
+        )
+    ]
+    if informatica:
         provedores.append(("BoaDica", lambda: buscar_boadica(consulta)))
     if serper_api_key:
         provedores.append(("Lojas confiáveis", lambda: buscar_serper(consulta, serper_api_key)))
 
     cotacoes, avisos = [], []
-    if not provedores:
-        return [], ["Não há provedor automático configurado para esta categoria."]
     with ThreadPoolExecutor(max_workers=len(provedores)) as executor:
         tarefas = {executor.submit(funcao): nome for nome, funcao in provedores}
         for tarefa in as_completed(tarefas):
             nome = tarefas[tarefa]
             try:
-                cotacoes.extend(tarefa.result())
+                resultado = tarefa.result()
+                if nome == "Lojas e marketplaces":
+                    ofertas_diretas, avisos_diretos = resultado
+                    cotacoes.extend(ofertas_diretas)
+                    avisos.extend(avisos_diretos)
+                else:
+                    cotacoes.extend(resultado)
             except Exception as exc:
                 avisos.append(f"{nome}: consulta indisponível ({exc}).")
+    if not serper_api_key:
+        avisos.append(
+            "A pesquisa complementar de preços não está configurada. "
+            "As buscas diretas dos marketplaces continuam disponíveis abaixo."
+        )
+    cotacoes_unicas = {}
+    for cotacao in cotacoes:
+        chave = (
+            cotacao.get("fonte"), cotacao.get("fornecedor"), cotacao.get("url"),
+            round(float(cotacao.get("preco_unitario") or 0), 2),
+        )
+        cotacoes_unicas[chave] = cotacao
+    cotacoes = list(cotacoes_unicas.values())
     cotacoes.sort(key=lambda item: item["preco_unitario"] + item.get("frete", 0))
     return cotacoes, avisos
 
@@ -293,3 +447,4 @@ def calcular_resultado(
         "lucro": lucro,
         "margem": margem,
     }
+

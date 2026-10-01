@@ -4,7 +4,6 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from supabase import Client, create_client
 
 import cotacao as cotacao_mod
@@ -193,11 +192,16 @@ if not df.empty:
 else:
     df_monitoradas = df.copy()
 
-aba_oportunidades, aba_cotacoes, aba_perfil = st.tabs(
-    ["🎯 Oportunidades", "🛒 Itens, cotações e margem", "🏢 Perfil do MEI"]
+rotulos_abas = ["🎯 Oportunidades", "🛒 Itens, cotações e margem", "🏢 Perfil do MEI"]
+aba_ativa = st.radio(
+    "Navegação principal",
+    rotulos_abas,
+    horizontal=True,
+    key="aba_ativa",
+    label_visibility="collapsed",
 )
 
-with aba_oportunidades:
+if aba_ativa == rotulos_abas[0]:
     if df.empty:
         st.info("Nenhuma oportunidade encontrada. Aguarde a próxima execução do robô.")
     else:
@@ -284,20 +288,17 @@ with aba_oportunidades:
                 ),
                 key="atalho_oportunidade",
             )
-            if st.button("🛒 Abrir itens, cotações e margem", type="primary"):
-                st.session_state["oportunidade_cotacao"] = oportunidade_atalho
-                components.html(
-                    """
-                    <script>
-                    const botoes = Array.from(window.parent.document.querySelectorAll('button'));
-                    const aba = botoes.find((botao) =>
-                        botao.textContent.includes('Itens, cotações e margem')
-                    );
-                    if (aba) aba.click();
-                    </script>
-                    """,
-                    height=0,
-                )
+            def abrir_cotacoes(identificador: str) -> None:
+                """Mantém a oportunidade escolhida e troca a navegação de forma nativa."""
+                st.session_state["oportunidade_cotacao"] = identificador
+                st.session_state["aba_ativa"] = rotulos_abas[1]
+
+            st.button(
+                "🛒 Abrir itens, cotações e margem",
+                type="primary",
+                on_click=abrir_cotacoes,
+                args=(oportunidade_atalho,),
+            )
 
             colunas = [
                 "alerta_prazo", "classificacao_mei", "score_mei", "modalidade", "janela_disputa",
@@ -367,7 +368,7 @@ with aba_oportunidades:
                     except Exception as exc:
                         st.error(f"Não foi possível salvar os status: {exc}")
 
-with aba_cotacoes:
+if aba_ativa == rotulos_abas[1]:
     if df_monitoradas.empty:
         st.info("As cotações ficarão disponíveis quando a atualização das oportunidades abertas terminar.")
     else:
@@ -658,7 +659,7 @@ with aba_cotacoes:
                 if venda_unitaria and preco_alvo > venda_unitaria:
                     st.warning("Com essa cotação, o preço de referência supera a estimativa do órgão.")
 
-with aba_perfil:
+if aba_ativa == rotulos_abas[2]:
     st.subheader("Perfil usado na triagem automática")
     st.caption(
         "Preencha exatamente como consta no CCMEI. O robô usa as categorias e o limite abaixo "

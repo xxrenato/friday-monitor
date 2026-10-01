@@ -46,6 +46,15 @@ CATEGORIAS_DISPONIVEIS = [
     "EPI e uniformes",
 ]
 
+COMPRAS_GOV_BUSCA_URL = (
+    "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras"
+)
+COMPRAS_GOV_MARCADORES = (
+    "compras.gov.br",
+    "comprasnet.gov.br",
+    "cnetmobile.estaleiro.serpro.gov.br",
+)
+
 
 @st.cache_resource
 def init_supabase(url: str, key: str) -> Client:
@@ -114,6 +123,19 @@ def numero(valor, padrao: float = 0.0) -> float:
 
 def brl(valor) -> str:
     return f"R$ {numero(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def eh_compras_gov(link) -> bool:
+    texto = str(link or "").casefold()
+    return any(marcador in texto for marcador in COMPRAS_GOV_MARCADORES)
+
+
+def canal_disputa(link) -> str:
+    if eh_compras_gov(link):
+        return "Compras.gov.br"
+    if not str(link or "").strip():
+        return "Sem link de origem"
+    return "Outro portal"
 
 
 def limpar_caches() -> None:
@@ -192,6 +214,9 @@ if not df.empty:
 else:
     df_monitoradas = df.copy()
 
+if not df_monitoradas.empty:
+    df_monitoradas["canal_disputa"] = df_monitoradas["link_sistema_origem"].map(canal_disputa)
+
 rotulos_abas = ["🎯 Oportunidades", "🛒 Itens, cotações e margem", "🏢 Perfil do MEI"]
 aba_ativa = st.radio(
     "Navegação principal",
@@ -223,7 +248,7 @@ if aba_ativa == rotulos_abas[0]:
             default=["Alta aderência", "Avaliar edital", "Baixa aderência"],
             key="filtro_aderencia",
         )
-        s1, s2 = st.columns(2)
+        s1, s2, s3 = st.columns(3)
         status_selecionados = s1.multiselect(
             "Status interno", STATUS_OPTIONS,
             default=["Em Análise", "Cotando Fornecedor", "Proposta Cadastrada"],
@@ -232,6 +257,11 @@ if aba_ativa == rotulos_abas[0]:
             "Alerta de prazo",
             ["🟢 Aberta agora", "🟡 Abre nesta semana", "🔴 Cadastrada para depois"],
             default=["🟢 Aberta agora", "🟡 Abre nesta semana", "🔴 Cadastrada para depois"],
+        )
+        canal_selecionado = s3.selectbox(
+            "Portal da disputa",
+            ["Todos os portais", "Somente Compras.gov.br", "Outros portais", "Sem link de origem"],
+            help="Escolha Compras.gov.br para priorizar processos operados no portal federal.",
         )
 
         filtrado = df_monitoradas.copy()
@@ -251,6 +281,13 @@ if aba_ativa == rotulos_abas[0]:
             filtrado = filtrado[filtrado["status"].isin(status_selecionados)]
         if alertas_selecionados:
             filtrado = filtrado[filtrado["alerta_prazo"].isin(alertas_selecionados)]
+        filtro_canal = {
+            "Somente Compras.gov.br": "Compras.gov.br",
+            "Outros portais": "Outro portal",
+            "Sem link de origem": "Sem link de origem",
+        }.get(canal_selecionado)
+        if filtro_canal:
+            filtrado = filtrado[filtrado["canal_disputa"] == filtro_canal]
         filtrado = filtrado.sort_values(
             ["ordem_alerta", "data_abertura_proposta", "score_mei", "data_encerramento_proposta"],
             ascending=[True, True, False, True],
@@ -265,7 +302,19 @@ if aba_ativa == rotulos_abas[0]:
         st.caption(
             f"Pregões: {int(filtrado['modalidade'].str.contains('Pregão', case=False, na=False).sum())} · "
             f"Dispensas: {int(filtrado['modalidade'].str.contains('Dispensa', case=False, na=False).sum())} · "
+            f"Compras.gov.br: {int((filtrado['canal_disputa'] == 'Compras.gov.br').sum())} · "
             "abrangência: Brasil inteiro"
+        )
+        aviso_compras, acesso_compras = st.columns([3, 1])
+        aviso_compras.caption(
+            "A consulta pública do Compras.gov.br não exige cadastro. Para enviar proposta ou lance, "
+            "é necessário acesso Gov.br e cadastro no SICAF. Processos operados por outro portal "
+            "continuam sujeitos às regras do sistema de origem."
+        )
+        acesso_compras.link_button(
+            "🔎 Busca refinada no Compras.gov.br",
+            COMPRAS_GOV_BUSCA_URL,
+            use_container_width=True,
         )
 
         if filtrado.empty:
@@ -301,7 +350,8 @@ if aba_ativa == rotulos_abas[0]:
             )
 
             colunas = [
-                "alerta_prazo", "classificacao_mei", "score_mei", "modalidade", "janela_disputa",
+                "alerta_prazo", "classificacao_mei", "score_mei", "modalidade", "canal_disputa",
+                "janela_disputa",
                 "data_abertura_proposta", "data_encerramento_proposta", "orgao", "objeto", "categoria",
                 "valor_estimado_br", "municipio", "uf", "link", "link_sistema_origem",
                 "status", "id",
@@ -320,6 +370,7 @@ if aba_ativa == rotulos_abas[0]:
                         "Pontuação", min_value=0, max_value=100, width="small"
                     ),
                     "modalidade": st.column_config.TextColumn("Modalidade", width="small"),
+                    "canal_disputa": st.column_config.TextColumn("Portal da disputa", width="medium"),
                     "janela_disputa": st.column_config.TextColumn("Disponibilidade", width="medium"),
                     "orgao": st.column_config.TextColumn("Órgão", width="large"),
                     "objeto": st.column_config.TextColumn("Objeto", width="large"),
@@ -394,13 +445,26 @@ if aba_ativa == rotulos_abas[1]:
         topo1.markdown(f"**Órgão:** {oportunidade.get('orgao', '')}")
         topo2.metric("Valor estimado", brl(oportunidade.get("valor_estimado")))
         topo3.metric("Aderência", oportunidade.get("classificacao_mei", "—"))
-        l1, l2 = st.columns(2)
+        l1, l2, l3 = st.columns(3)
         if oportunidade.get("link"):
             l1.link_button("Abrir edital no PNCP", oportunidade["link"], use_container_width=True)
         if oportunidade.get("link_sistema_origem"):
             l2.link_button(
-                "Abrir sistema da disputa", oportunidade["link_sistema_origem"], use_container_width=True
+                "Abrir no Compras.gov.br" if eh_compras_gov(oportunidade["link_sistema_origem"])
+                else "Abrir sistema da disputa",
+                oportunidade["link_sistema_origem"],
+                use_container_width=True,
             )
+        l3.link_button(
+            "Busca pública no Compras.gov.br",
+            COMPRAS_GOV_BUSCA_URL,
+            use_container_width=True,
+        )
+        st.caption(
+            f"Portal identificado: {canal_disputa(oportunidade.get('link_sistema_origem'))}. "
+            "Use a busca pública com situação Em andamento, etapa Abertas para participação e, "
+            "quando conveniente, Preferenciais ME/EPP."
+        )
         st.caption(f"Critérios da classificação: {oportunidade.get('motivo_classificacao') or 'aguardando análise'}")
 
         try:
